@@ -38,9 +38,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 分支命名:
 
-- **有关联议题时**:分支名必须以议题编号开头,格式 `<议题编号>-<简短描述>`,例如议题 #6 对应 `6-windows-service-docs`。
+- **有关联议题时**:分支名必须以议题编号开头,格式 `<议题编号>-<类型>-<简短描述>`,类型取 `feat`、`fix`、`refactor`,必要时可用 `docs`、`chore`、`test`。例如议题 #6 做修复对应 `6-fix-cache-ttl`,做新功能对应 `6-feat-data-dir`,做重构对应 `6-refactor-cache`。
 - **没有议题时**:默认直接在 `dev` 分支上开发,不必另开分支。
-- 历史上的 `feat/`、`fix/`、`refactor/` 前缀分支不受此约定约束,新工作不再使用这些前缀。
+- 历史上的 `feat/`、`fix/`、`refactor/` 前缀分支不受此约定约束,新工作不再使用 `类型/描述` 这套旧命名。
 
 `dev` 分支:
 
