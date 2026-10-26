@@ -24,6 +24,37 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 源码发布到 GitHub;容器镜像发布到 GHCR。
 - `origin`(GitHub)是主远端;`gitlab` 为备用远端,不是默认推送目标。需要两端一致时使用仓库内已配置的 `git sync` 别名。
 
+## 分支与协作流程
+
+`main` 是保护分支(ruleset `protect-main`):禁止直接 push、禁止 force push、禁止删除,所有改动都必须通过 PR 进入。要求的批准数为 0(单人项目自审自合),但 agent **不得自行合并 PR**,必须等维护者明确同意。
+
+标准流程:
+
+1. 开分支:从最新 `main` 拉出工作分支(无议题时直接用 `dev`,见下)。
+2. push:把工作分支推到 `origin`。
+3. 创建 PR:`gh pr create`,目标分支为 `main`。
+4. 等待审核:PR 创建后停下,交给维护者审核。
+5. 合并:维护者同意后用 `gh pr merge --squash --delete-branch` 合并并删除远程分支。
+
+分支命名:
+
+- **有关联议题时**:分支名必须以议题编号开头,格式 `<议题编号>-<类型>-<简短描述>`,类型取 `feat`、`fix`、`refactor`,必要时可用 `docs`、`chore`、`test`。例如议题 #6 做修复对应 `6-fix-cache-ttl`,做新功能对应 `6-feat-data-dir`,做重构对应 `6-refactor-cache`。
+- **没有议题时**:默认直接在 `dev` 分支上开发,不必另开分支。
+- 历史上的 `feat/`、`fix/`、`refactor/` 前缀分支不受此约定约束,新工作不再使用 `类型/描述` 这套旧命名。
+
+`dev` 分支:
+
+- `dev` 是没有议题时的长期工作分支,可直接 push,但仍需走 `dev` → `main` 的 PR。
+- 每次在 `dev` 上开始新工作前,先把最新 `main` 合并进来:
+
+```bash
+git switch dev
+git fetch origin
+git merge origin/main
+```
+
+- 冲突在 `dev` 上解决,解决后照常 push 并发起 PR。
+
 ## 配置与日志
 
 固定配置文件:`~/.deepseek_search_fetch/config.json`
