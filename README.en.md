@@ -90,7 +90,7 @@ docker run -d --name deepseek-search-fetch-mcp \
   deepseek-search-fetch-mcp
 ```
 
-- Inside the container `HOME=/data`, so config, logs, and cache live under `/data/.deepseek_search_fetch`.
+- Inside the container `HOME=/data`, so config, logs, cache, and access keys live under `/data/.deepseek_search_fetch`.
 - Without a named volume Docker uses an anonymous one; data is hard to reuse after the container is recreated, so always mount `/data`.
 - The container runs `server` by default; to run CLI commands inside it, override the command:
 
@@ -98,6 +98,13 @@ docker run -d --name deepseek-search-fetch-mcp \
 docker run --rm -e DEEPSEEK_API_KEY=sk-... \
   -v deepseek-sf-data:/data \
   deepseek-search-fetch-mcp search "DeepSeek V4"
+```
+
+Manage access keys in the container data directory (no DeepSeek API Key needed):
+
+```bash
+docker run --rm -v deepseek-sf-data:/data \
+  deepseek-search-fetch-mcp apikey add laptop
 ```
 
 The image is also published to GHCR: `ghcr.io/bob56621517/deepseek-search-fetch-mcp`.
@@ -113,18 +120,20 @@ To run as an auto-start Windows service, see [Windows service deployment](docs/d
 | Config | `~/.deepseek_search_fetch/config.json` |
 | Logs | `~/.deepseek_search_fetch/logs/server.log` |
 | Cache | `~/.deepseek_search_fetch/cache.db` (`-wal` and `-shm` may appear alongside) |
+| Access key store | `~/.deepseek_search_fetch/auth.db` (hashes and masked fragments only; `-wal` and `-shm` may appear alongside) |
 
 On Windows `~` maps to your user directory, e.g. `C:\Users\<name>`.
 
-The data directory defaults to `~/.deepseek_search_fetch` and can be overridden with `--data-dir` or the `DEEPSEEK_SEARCH_FETCH_HOME` environment variable (precedence: startup flag > environment variable > default). Config, cache, and logs always live in the same data directory.
+The data directory defaults to `~/.deepseek_search_fetch` and can be overridden with `--data-dir` or the `DEEPSEEK_SEARCH_FETCH_HOME` environment variable (precedence: startup flag > environment variable > default). Config, cache, access keys, and logs always live in the same data directory.
 
 - On first start the directory and a config template are created automatically; the Key is empty.
-- Config is read once at process start; restart the service after changing it. CLI commands re-read it on every run.
+- Config is read once at process start; restart the service after changing it. CLI commands re-read it on every run. Access keys are managed by `apikey` and take effect immediately without a restart.
 - If the user home directory cannot be determined and no data directory is set, the program skips config file creation and uses only environment variables and startup flags; caching is unavailable in that case. When running under a non-interactive account such as a service or container, always set the data directory explicitly or make sure the home directory points to the user directory (see [Windows service deployment](docs/deployment/windows-service.md)).
 
 ### Logging
 
 - Server log file: `~/.deepseek_search_fetch/logs/server.log`
+- Authentication/rate-limit rejections are also written there with `event`, `remote`, `status`, `reason` fields for fail2ban; no keys are logged
 - Rotation: 10 MiB per file, keeping up to 5 files (current `server.log` + 4 backups), backups named `server-<timestamp>.log`
 - `server` mode: logs go to both stderr and the file
 - CLI mode: logs go **only to the file**; stdout carries JSON only
@@ -147,6 +156,14 @@ The config file defaults to `~/.deepseek_search_fetch/config.json`; the data dir
   "cache_ttl": "30m",
   "cache_max_bytes": 1073741824,
   "default_lang": "",
+  "rate_limit_rps": 10,
+  "rate_limit_burst": 20,
+  "auth_fail_limit": 10,
+  "auth_fail_window": "1m",
+  "auth_fail_block": "5m",
+  "ip_rate_limit_rps": 0,
+  "ip_rate_limit_burst": 0,
+  "trusted_proxies": [],
   "http_max_idle_conns": 5,
   "http_max_idle_conns_per_host": 5,
   "http_idle_conn_timeout": "90s",
@@ -163,7 +180,7 @@ The config file defaults to `~/.deepseek_search_fetch/config.json`; the data dir
 
 | Setting | Default | Description |
 |---|---|---|
-| `deepseek_api_key` | empty | DeepSeek API Key; required by `server`, `search`, `fetch`; not needed by `flushall` |
+| `deepseek_api_key` | empty | DeepSeek API Key; required by `server`, `search`, `fetch`; not needed by `flushall` or `apikey` |
 | `deepseek_api_url` | `https://api.deepseek.com` | Upstream base URL |
 | `server_host` | `127.0.0.1` | Listener address in `server` mode |
 | `server_port` | `18081` | Listener port in `server` mode |
@@ -172,11 +189,21 @@ The config file defaults to `~/.deepseek_search_fetch/config.json`; the data dir
 | `cache_ttl` | `30m` | Cache entry lifetime; content and summary are evaluated separately |
 | `cache_max_bytes` | `1073741824` (1 GiB) | Page-level live-size limit, minimum 1 MiB; not a disk-usage limit |
 | `default_lang` | empty | Default language completion: empty disables it, `auto` reads `LC_ALL`/`LC_MESSAGES`/`LANG`, or set a two-letter code such as `zh`; `zh-CN` is rejected |
+| `rate_limit_rps` | `10` | Token-bucket rate per access key; `0` disables per-key rate limiting |
+| `rate_limit_burst` | `20` | Burst capacity per access key; must be at least 1 when rate limiting is enabled |
+| `auth_fail_limit` | `10` | Authentication failures allowed per IP within the window; `0` disables failure blocking |
+| `auth_fail_window` | `1m` | Window for counting authentication failures |
+| `auth_fail_block` | `5m` | Block duration after the failure threshold is reached |
+| `ip_rate_limit_rps` | `0` | All-request rate per client IP; `0` disables it |
+| `ip_rate_limit_burst` | `0` | Burst capacity per client IP; must be at least 1 when IP rate limiting is enabled |
+| `trusted_proxies` | `[]` | Trusted proxy CIDR list; `X-Forwarded-For` is honored only from these addresses |
 | `http_max_idle_conns` | `5` | Maximum idle connections overall |
 | `http_max_idle_conns_per_host` | `5` | Maximum idle connections per host |
 | `http_idle_conn_timeout` | `90s` | Idle connection timeout |
 | `http_tls_handshake_timeout` | `10s` | TLS handshake timeout |
 | `reset_connection_on_error` | `true` | Drop idle connections after any upstream failure so the next call reconnects |
+
+> Authentication and rate-limit settings (`rate_limit_*`, `auth_fail_*`, `ip_rate_limit_*`, `trusted_proxies`) are read from the config file only and apply to `server` mode. There are no environment variables or command-line flags for them. Access keys themselves are not stored in the config file; manage them with the `apikey` commands.
 
 ### Environment variables
 
@@ -221,6 +248,9 @@ deepseek-search-fetch-mcp server   [--host 127.0.0.1] [--port 18081]
 deepseek-search-fetch-mcp search   [--count 10] [--content] <query>
 deepseek-search-fetch-mcp fetch    [--summary] [--refresh] <url>
 deepseek-search-fetch-mcp flushall
+deepseek-search-fetch-mcp apikey   add <name>
+deepseek-search-fetch-mcp apikey   list
+deepseek-search-fetch-mcp apikey   remove <name>
 deepseek-search-fetch-mcp --help
 ```
 
@@ -367,6 +397,54 @@ Output:
 
 If run while the server is active, `VACUUM` may wait for the SQLite write lock; on `database is locked`, retry later.
 
+### `apikey`
+
+Manages access keys for MCP clients. These keys are unrelated to the upstream `deepseek_api_key` and only protect `/mcp`; these commands do not require a DeepSeek API Key.
+
+```bash
+deepseek-search-fetch-mcp apikey add laptop
+deepseek-search-fetch-mcp apikey list
+deepseek-search-fetch-mcp apikey remove laptop
+```
+
+`apikey add <name>` generates a new key and shows the full value exactly once:
+
+```json
+{
+  "name": "laptop",
+  "api_key": "dsf_...",
+  "masked": "dsf_Ab12Cd34…x9Yz",
+  "created_at": "2026-11-06T10:00:00Z",
+  "auth": "enforced",
+  "warning": "访问密钥只显示一次，请立即保存"
+}
+```
+
+`apikey list` returns only the masked first/last fragments, never plaintext or hashes:
+
+```json
+{
+  "auth": "enforced",
+  "keys": [
+    {
+      "name": "laptop",
+      "masked": "dsf_Ab12Cd34…x9Yz",
+      "created_at": "2026-11-06T10:00:00Z",
+      "last_used_at": "2026-11-06T10:05:00Z"
+    }
+  ]
+}
+```
+
+`apikey remove <name>` hard-deletes a key. Removing the last key sets `auth` to `disabled` with a warning, and `/mcp` immediately stops checking credentials.
+
+- The key store is `auth.db` in the data directory; it contains only SHA-256 hashes and masked fragments.
+- `auth.db` is separate from `cache.db`; `flushall` does not clear access keys.
+- The server and CLI must use the same data directory, or keys added by the CLI will be invisible to the server.
+- Global flags such as `--data-dir` go after `apikey add/remove` and before `<name>`, e.g. `apikey add --data-dir D:\data\deepseek laptop`; alternatively set `DEEPSEEK_SEARCH_FETCH_HOME`.
+- Keys are generated only, not imported. If a key is lost, rotate with `remove` + `add`.
+- All keys are equivalent in this version; there are no read-only/write scopes or expiry.
+
 ### Exit codes and output
 
 - Exit code `0` on success, `1` on failure
@@ -396,6 +474,31 @@ Health check response:
 
 Default address: `http://127.0.0.1:18081/mcp`
 
+### Access keys, authentication, and rate limiting
+
+- With no access keys, `/mcp` does not authenticate requests and serves them normally; this suits the default `127.0.0.1` local setup.
+- As soon as `auth.db` contains at least one key, `/mcp` switches to strict authentication immediately; no restart is needed.
+- Clients pass the key with `Authorization: Bearer <key>` or `X-API-Key: <key>`. If both are present and differ, the request is rejected.
+- `/health` and `/healthz` are always exempt.
+- If the auth store is unavailable, the server returns 503 rather than failing open.
+
+| Scenario | Status | Notes |
+|---|---|---|
+| Missing, invalid, or conflicting credentials | 401 | Includes `WWW-Authenticate: Bearer` |
+| Per-key rate limit or too many auth failures from one IP | 429 | Includes `Retry-After` |
+| Auth store unavailable | 503 | Not used by fail2ban |
+
+Rate-limit defaults:
+
+- 10 rps and burst 20 per access key; `rate_limit_rps=0` disables per-key limiting.
+- 10 authentication failures per IP in 1 minute, then a 5-minute block; a success resets the counter.
+- Per-IP all-request limiting is off by default; enable it with `ip_rate_limit_rps` for public deployments.
+- Limits are in-process memory; multiple replicas count independently.
+
+fail2ban can read `event=auth_fail` (401) and `event=auth_blocked` (429) from `server.log`. Do not ban on every 429, or legitimate clients hitting rate limits will be blocked. See [fail2ban deployment](docs/deployment/fail2ban.md) for a filter/jail example.
+
+> Access keys provide authentication only, not transport encryption. Public deployments must sit behind a TLS reverse proxy.
+
 ### Client configuration example
 
 Start the server first:
@@ -411,13 +514,16 @@ Then configure the client:
   "mcpServers": {
     "deepseek-search-fetch": {
       "type": "http",
-      "url": "http://127.0.0.1:18081/mcp"
+      "url": "http://127.0.0.1:18081/mcp",
+      "headers": {
+        "Authorization": "Bearer dsf_..."
+      }
     }
   }
 }
 ```
 
-Configuration fields differ slightly between clients; follow your client's documentation.
+Omit `headers` when no access keys are configured. Configuration fields differ slightly between clients; follow your client's documentation.
 
 ### Tool 1: `web_ext_search`
 
@@ -530,6 +636,7 @@ A cached summary longer than 8000 runes is **never truncated**; it is treated as
 ### Storage
 
 - File: `~/.deepseek_search_fetch/cache.db`
+- The access-key store is a separate `auth.db` and is not part of the cache; `flushall` does not clear it
 - Engine: SQLite, WAL mode, `busy_timeout=5000`, `synchronous=NORMAL`
 - Each process uses a single serialized connection
 - When multiple processes/sessions share the file, SQLite handles concurrency
@@ -644,8 +751,11 @@ Write rules:
 
 | Symptom | Action |
 |---|---|
-| `必须指定命令：server、search、fetch 或 flushall` | Add a subcommand, e.g. `server` |
+| `必须指定命令：server、search、fetch、flushall 或 apikey` | Add a subcommand, e.g. `server` |
 | `未配置 DeepSeek API Key` | Set `DEEPSEEK_API_KEY`, `--deepseek-api-key`, or write it to the config file |
+| `打开访问密钥库失败` | Check the data directory and `auth.db` write permissions; the server refuses to start rather than degrading |
+| MCP returns 401 | Access keys exist but the client omitted or sent the wrong credential; inspect names with `apikey list` and configure `Authorization: Bearer <key>` |
+| MCP returns 429 | Per-key rate limit or per-IP auth-failure block; wait for `Retry-After` or tune `rate_limit_*` / `auth_fail_*` |
 | `缓存不可用` in the logs | Check the user home directory and write permissions; the service falls back to no-cache mode |
 | `fetch` times out | Upstream browser rendering may be slow; `fetch_timeout` defaults to 60s, and upstream may itself return 504 |
 | Search results are too long | Search returns only `snippet`; use `fetch(summary=true)` for a summary, or `fetch` for content (CLI returns the full text, MCP paginates via `offset`/`limit`) |
@@ -654,8 +764,11 @@ Write rules:
 
 Security recommendations:
 
-- The MCP endpoint has no authentication and listens on `127.0.0.1` by default; never expose it directly to the public internet
-- Keep the API Key in environment variables or the config file only; never commit it
+- With no access keys, `/mcp` has no authentication; before exposing the service, run `apikey add <name>` and confirm `apikey list` reports `auth=enforced`
+- Access keys are stored as hashes only; the full value is shown once by `apikey add`. `auth.db` is separate from `cache.db`, and `flushall` does not affect keys
+- Public deployments must sit behind a TLS reverse proxy; access keys sent over plain HTTP are exposed
+- Configure fail2ban on the reverse proxy or host to ban on `auth_fail` / `auth_blocked`; see [fail2ban deployment](docs/deployment/fail2ban.md)
+- Keep the DeepSeek API Key in environment variables or the config file only; never commit it
 - Cached page content may contain sensitive material; run `flushall` when necessary
 
 ---

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/bob56621517/deepseek-search-fetch-mcp/internal/auth"
 	mcpserver "github.com/bob56621517/deepseek-search-fetch-mcp/internal/mcp"
 	"github.com/bob56621517/deepseek-search-fetch-mcp/internal/openapi"
 )
@@ -245,6 +247,85 @@ func TestHealth(t *testing.T) {
 		}
 		if !strings.Contains(string(body), `"status":"ok"`) {
 			t.Fatalf("%s 响应不符: %s", path, body)
+		}
+	}
+}
+
+func TestAccessKeyAuth(t *testing.T) {
+	up := newFakeUpstream(t)
+	client := openapi.NewClient(up.server.URL, "test-key", openapi.DefaultOptions())
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	store, err := auth.OpenStore(auth.StoreOptions{Path: filepath.Join(t.TempDir(), "auth.db")})
+	if err != nil {
+		t.Fatalf("打开访问密钥库失败: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	_, plain, err := store.Add(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("添加访问密钥失败: %v", err)
+	}
+	resolver, err := auth.NewClientIPResolver(nil)
+	if err != nil {
+		t.Fatalf("创建 IP 解析器失败: %v", err)
+	}
+	middleware, err := auth.NewMiddleware(auth.MiddlewareOptions{
+		Store:    store,
+		Limiter:  auth.NewLimiter(auth.LimitConfig{}),
+		Resolver: resolver,
+		Logger:   logger,
+	})
+	if err != nil {
+		t.Fatalf("创建鉴权中间件失败: %v", err)
+	}
+	if err := middleware.RefreshMode(context.Background()); err != nil {
+		t.Fatalf("读取鉴权模式失败: %v", err)
+	}
+
+	srv := mcpserver.New(mcpserver.Options{
+		Client:  client,
+		Logger:  logger,
+		Version: "test",
+		Auth:    middleware,
+	})
+	handler := srv.Handler()
+
+	// 健康检查永远豁免鉴权。
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/health 应豁免鉴权，实际 %d", rec.Code)
+	}
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"v0"}}}`
+	newRequest := func(headers map[string]string) *http.Request {
+		req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		for key, value := range headers {
+			req.Header.Set(key, value)
+		}
+		return req
+	}
+
+	// 有密钥但请求未携带凭据时应拒绝。
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, newRequest(nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("缺少凭据应返回 401，实际 %d", rec.Code)
+	}
+
+	// 有效凭据应穿透到 MCP 处理器；具体状态码取决于请求体是否完整，
+	// 这里只断言不再被鉴权层拦截。
+	for name, headers := range map[string]map[string]string{
+		"Bearer":    {"Authorization": "Bearer " + plain},
+		"X-API-Key": {"X-API-Key": plain},
+	} {
+		rec = httptest.NewRecorder()
+		handler.ServeHTTP(rec, newRequest(headers))
+		if rec.Code == http.StatusUnauthorized {
+			t.Fatalf("%s 有效凭据不应被拒绝: %s", name, rec.Body.String())
 		}
 	}
 }

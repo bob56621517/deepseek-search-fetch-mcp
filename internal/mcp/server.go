@@ -8,6 +8,7 @@ import (
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/bob56621517/deepseek-search-fetch-mcp/internal/auth"
 	"github.com/bob56621517/deepseek-search-fetch-mcp/internal/openapi"
 )
 
@@ -21,6 +22,8 @@ type Options struct {
 	Version string
 	// DefaultLang 非空时，搜索 query 未显式包含 lang: 会补全该语言码。
 	DefaultLang string
+	// Auth 非 nil 时包装 /mcp 处理链，提供访问密钥鉴权、限流与审计日志。
+	Auth *auth.Middleware
 }
 
 // Server 持有 HTTP 处理器。
@@ -62,8 +65,13 @@ func New(opts Options) *Server {
 		},
 	)
 
+	mcpHandler := http.Handler(handler)
+	if opts.Auth != nil {
+		mcpHandler = opts.Auth.Wrap(mcpHandler)
+	}
+
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", handler)
+	mux.Handle("/mcp", mcpHandler)
 	mux.HandleFunc("/health", healthHandler)
 	mux.HandleFunc("/healthz", healthHandler)
 	return &Server{handler: mux}
