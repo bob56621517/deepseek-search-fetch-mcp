@@ -346,7 +346,7 @@ Field reference:
 | `source` | `cache` (cache hit) or `upstream` (live fetch) |
 | `cachedAt` | Cache timestamp, UTC RFC 3339 |
 | `summaryQuery` | Search query that produced the summary |
-| `hint` | Advisory message; explains that content was returned because the summary is unavailable (missed or longer than 8000 runes) |
+| `hint` | Advisory message; explains that content was returned because the summary is unavailable (missed or longer than 8000 runes). Only present when falling back to content |
 
 ### `flushall`
 
@@ -585,6 +585,7 @@ Write rules:
 - An existing **unexpired fetch content** is never overwritten by search content, regardless of length
 - Otherwise the content returned by search is written with `content_source=search`
 - Summary: when search returns a non-empty summary it overwrites the old one and records `summary_query`; when it returns none, an unexpired old summary is kept
+- Results with neither content nor summary are skipped to avoid empty rows
 - All results are written in a single transaction
 
 **Search never replaces the upstream request with cached results.** Every search queries upstream; writes read existing entries to merge (so unexpired fetch content is preserved), but a cache hit never skips the search.

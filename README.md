@@ -346,7 +346,7 @@ deepseek-search-fetch-mcp fetch --refresh "https://example.com/article"
 | `source` | `cache`（命中缓存）或 `upstream`（实时抓取） |
 | `cachedAt` | 缓存时间，UTC RFC 3339 |
 | `summaryQuery` | 生成该摘要的搜索词 |
-| `hint` | 提示信息；摘要不可用（未命中或超过 8000 个字符）时说明已回退正文 |
+| `hint` | 提示信息；摘要不可用（未命中或超过 8000 个字符）时说明已回退正文。仅出现在回退为正文的输出中 |
 
 ### `flushall`
 
@@ -585,6 +585,7 @@ deepseek-search-fetch-mcp server
 - 若已有**未过期的 fetch 正文**，不会被 search 正文覆盖（无论长短）
 - 否则，用 search 返回的正文写入，`content_source=search`
 - 摘要：搜索返回非空摘要时，覆盖旧摘要并记录 `summary_query`；搜索未返回摘要时保留未过期的旧摘要
+- 既无正文也无摘要的结果跳过写入，避免留下空行
 - 所有结果在同一个事务中写入
 
 **搜索不会用缓存结果替代上游请求。** 每次搜索都会请求上游；写入时会读取已有条目做合并（避免覆盖未过期的 fetch 正文），但不会因为缓存命中而跳过搜索。

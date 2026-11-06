@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -385,6 +386,28 @@ func TestDataDirFlagOverridesEnv(t *testing.T) {
 	}
 	if cfg.dataDir != flagDir {
 		t.Fatalf("--data-dir 应优先于环境变量: %q", cfg.dataDir)
+	}
+}
+
+func TestResolveDefaultLang(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	t.Setenv("LC_ALL", "")
+	t.Setenv("LC_MESSAGES", "")
+	t.Setenv("LANG", "zh_CN.UTF-8")
+
+	if got := resolveDefaultLang("auto", logger); got != "zh" {
+		t.Fatalf("auto 应解析为 zh，实际 %q", got)
+	}
+	if got := resolveDefaultLang("en", logger); got != "en" {
+		t.Fatalf("显式语言码应原样返回，实际 %q", got)
+	}
+	if got := resolveDefaultLang("", logger); got != "" {
+		t.Fatalf("关闭时应返回空，实际 %q", got)
+	}
+
+	t.Setenv("LANG", "")
+	if got := resolveDefaultLang("auto", logger); got != "" {
+		t.Fatalf("检测不到语言环境变量时应返回空，实际 %q", got)
 	}
 }
 
