@@ -187,6 +187,7 @@ Windows 下 `~` 对应用户目录，例如 `C:\Users\<name>`。
 | `DEEPSEEK_SEARCH_FETCH_HOME` | 数据目录（默认 `~/.deepseek_search_fetch`） |
 | `DEEPSEEK_SEARCH_FETCH_HOST` | `server_host` |
 | `DEEPSEEK_SEARCH_FETCH_PORT` | `server_port` |
+| `DEEPSEEK_DEFAULT_LANG` | `default_lang` |
 
 ### 命令行参数
 

@@ -187,6 +187,7 @@ The config file defaults to `~/.deepseek_search_fetch/config.json`; the data dir
 | `DEEPSEEK_SEARCH_FETCH_HOME` | Data directory (default `~/.deepseek_search_fetch`) |
 | `DEEPSEEK_SEARCH_FETCH_HOST` | `server_host` |
 | `DEEPSEEK_SEARCH_FETCH_PORT` | `server_port` |
+| `DEEPSEEK_DEFAULT_LANG` | `default_lang` |
 
 ### Command-line flags
 

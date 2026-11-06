@@ -21,6 +21,7 @@ func isolateHome(t *testing.T) string {
 	unsetEnv(t, "DEEPSEEK_SEARCH_FETCH_HOST")
 	unsetEnv(t, "DEEPSEEK_SEARCH_FETCH_PORT")
 	unsetEnv(t, "DEEPSEEK_SEARCH_FETCH_HOME")
+	unsetEnv(t, "DEEPSEEK_DEFAULT_LANG")
 	return dir
 }
 
@@ -408,6 +409,34 @@ func TestResolveDefaultLang(t *testing.T) {
 	t.Setenv("LANG", "")
 	if got := resolveDefaultLang("auto", logger); got != "" {
 		t.Fatalf("检测不到语言环境变量时应返回空，实际 %q", got)
+	}
+}
+
+func TestDefaultLangEnvOverridesFile(t *testing.T) {
+	home := isolateHome(t)
+	writeConfigFile(t, home, `{"deepseek_api_key":"k","default_lang":"en"}`)
+	t.Setenv("DEEPSEEK_DEFAULT_LANG", "zh")
+
+	cfg, err := loadConfig(nil, io.Discard)
+	if err != nil {
+		t.Fatalf("加载失败: %v", err)
+	}
+	if cfg.defaultLang != "zh" {
+		t.Fatalf("环境变量应覆盖配置文件: %q", cfg.defaultLang)
+	}
+}
+
+func TestEmptyDefaultLangEnvDoesNotOverrideFile(t *testing.T) {
+	home := isolateHome(t)
+	writeConfigFile(t, home, `{"deepseek_api_key":"k","default_lang":"zh"}`)
+	t.Setenv("DEEPSEEK_DEFAULT_LANG", "")
+
+	cfg, err := loadConfig(nil, io.Discard)
+	if err != nil {
+		t.Fatalf("加载失败: %v", err)
+	}
+	if cfg.defaultLang != "zh" {
+		t.Fatalf("空环境变量不应覆盖配置文件: %q", cfg.defaultLang)
 	}
 }
 

@@ -81,7 +81,7 @@ git merge origin/main
 首次启动时如果目录或文件不存在,会自动创建(Key 为空)。配置只在启动时读取一次,修改后需要重启。配置优先级:**启动参数 > 环境变量 > 配置文件 > 默认值**。
 
 - 启动参数:`--deepseek-api-key`、`--deepseek-api-url`、`--data-dir`、`--host`、`--port`
-- 环境变量:`DEEPSEEK_API_KEY`、`DEEPSEEK_API_URL`、`DEEPSEEK_SEARCH_FETCH_HOME`、`DEEPSEEK_SEARCH_FETCH_HOST`、`DEEPSEEK_SEARCH_FETCH_PORT`
+- 环境变量:`DEEPSEEK_API_KEY`、`DEEPSEEK_API_URL`、`DEEPSEEK_SEARCH_FETCH_HOME`、`DEEPSEEK_SEARCH_FETCH_HOST`、`DEEPSEEK_SEARCH_FETCH_PORT`、`DEEPSEEK_DEFAULT_LANG`
 - 配置文件:`deepseek_api_key`、`deepseek_api_url`、`server_host`、`server_port`、`request_timeout`、`fetch_timeout`、`cache_ttl`、`cache_max_bytes`、`default_lang`、`http_max_idle_conns`、`http_max_idle_conns_per_host`、`http_idle_conn_timeout`、`http_tls_handshake_timeout`、`reset_connection_on_error`
 - 数据目录默认 `~/.deepseek_search_fetch`,可用 `--data-dir` 或 `DEEPSEEK_SEARCH_FETCH_HOME` 覆盖(优先级:启动参数 > 环境变量 > 默认);配置、缓存、日志三者落在同一目录;以服务/容器等非交互账户运行时必须显式指定
 - `fetch_timeout` 只作用于抓取请求(浏览器渲染更慢),搜索仍使用 `request_timeout`

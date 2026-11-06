@@ -160,6 +160,9 @@ func loadConfigFor(fs *flag.FlagSet, values *flagValues, requireKey bool) (confi
 		}
 		cfg.port = p
 	}
+	if v, ok := os.LookupEnv("DEEPSEEK_DEFAULT_LANG"); ok && strings.TrimSpace(v) != "" {
+		cfg.defaultLang = strings.TrimSpace(v)
+	}
 
 	if setByFlag["deepseek-api-key"] {
 		cfg.apiKey = strings.TrimSpace(values.apiKey)

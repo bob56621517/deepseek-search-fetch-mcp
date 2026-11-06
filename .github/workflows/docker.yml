@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
     tags: ["*"]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -21,9 +23,11 @@ jobs:
           cache: true
       - run: go vet ./...
       - run: go test ./...
+      - run: CGO_ENABLED=1 go test -race ./...
 
   build:
     needs: test
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
