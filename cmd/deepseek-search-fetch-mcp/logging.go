@@ -20,16 +20,15 @@ const (
 )
 
 // newLogger 返回同时写入 stderr 与滚动文件的 logger。
-func newLogger(stderr io.Writer, level slog.Level) (*slog.Logger, io.Closer, error) {
-	dir := dataDir()
-	if dir == "" {
+func newLogger(stderr io.Writer, level slog.Level, dataDir string) (*slog.Logger, io.Closer, error) {
+	if dataDir == "" {
 		out := stderr
 		if out == nil {
 			out = io.Discard
 		}
 		return slog.New(slog.NewTextHandler(out, &slog.HandlerOptions{Level: level})), nopCloser{}, nil
 	}
-	w, err := newRotatingWriter(filepath.Join(dir, logDirName), logFileName, maxLogSize, maxLogFiles-1)
+	w, err := newRotatingWriter(filepath.Join(dataDir, logDirName), logFileName, maxLogSize, maxLogFiles-1)
 	if err != nil {
 		return nil, nil, err
 	}

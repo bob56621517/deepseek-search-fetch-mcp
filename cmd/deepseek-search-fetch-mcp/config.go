@@ -33,15 +33,17 @@ const (
 )
 
 type config struct {
-	apiKey string
-	apiURL string
-	host   string
-	port   int
+	apiKey  string
+	apiURL  string
+	host    string
+	port    int
+	dataDir string
 
 	requestTimeout          time.Duration
 	fetchTimeout            time.Duration
 	cacheTTL                time.Duration
 	cacheMaxBytes           int64
+	defaultLang             string
 	httpMaxIdleConns        int
 	httpMaxIdleConnsPerHost int
 	httpIdleConnTimeout     time.Duration
@@ -58,6 +60,7 @@ type fileConfig struct {
 	FetchTimeout            *string `json:"fetch_timeout"`
 	CacheTTL                *string `json:"cache_ttl"`
 	CacheMaxBytes           *int64  `json:"cache_max_bytes"`
+	DefaultLang             *string `json:"default_lang"`
 	HTTPMaxIdleConns        *int    `json:"http_max_idle_conns"`
 	HTTPMaxIdleConnsPerHost *int    `json:"http_max_idle_conns_per_host"`
 	HTTPIdleConnTimeout     *string `json:"http_idle_conn_timeout"`
@@ -84,10 +87,11 @@ func loadConfig(args []string, stderr io.Writer) (config, error) {
 
 // flagValues 保存各子命令 FlagSet 解析出的值。
 type flagValues struct {
-	apiKey string
-	apiURL string
-	host   string
-	port   int
+	apiKey  string
+	apiURL  string
+	host    string
+	port    int
+	dataDir string
 }
 
 func newFlagSet(name string, stderr io.Writer) (*flag.FlagSet, *flagValues) {
@@ -96,6 +100,7 @@ func newFlagSet(name string, stderr io.Writer) (*flag.FlagSet, *flagValues) {
 	values := &flagValues{}
 	fs.StringVar(&values.apiKey, "deepseek-api-key", "", "DeepSeek API Key")
 	fs.StringVar(&values.apiURL, "deepseek-api-url", "", "DeepSeek API Base URL")
+	fs.StringVar(&values.dataDir, "data-dir", "", "数据目录（存放配置、日志与缓存）")
 	return fs, values
 }
 
@@ -118,7 +123,10 @@ func loadConfigFor(fs *flag.FlagSet, values *flagValues, requireKey bool) (confi
 	setByFlag := make(map[string]bool)
 	fs.Visit(func(f *flag.Flag) { setByFlag[f.Name] = true })
 
-	path, err := ensureConfigFile()
+	// 数据目录：启动参数 > 环境变量 > 默认 ~/.deepseek_search_fetch
+	cfg.dataDir = resolveDataDir(dataDirOverride(setByFlag, values))
+
+	path, err := ensureConfigFile(cfg.dataDir)
 	if err != nil {
 		return cfg, err
 	}
@@ -136,14 +144,14 @@ func loadConfigFor(fs *flag.FlagSet, values *flagValues, requireKey bool) (confi
 		}
 	}
 
-	if v, ok := os.LookupEnv("DEEPSEEK_API_KEY"); ok {
+	if v, ok := os.LookupEnv("DEEPSEEK_API_KEY"); ok && strings.TrimSpace(v) != "" {
 		cfg.apiKey = strings.TrimSpace(v)
 	}
-	if v, ok := os.LookupEnv("DEEPSEEK_API_URL"); ok {
+	if v, ok := os.LookupEnv("DEEPSEEK_API_URL"); ok && strings.TrimSpace(v) != "" {
 		cfg.apiURL = strings.TrimSpace(v)
 	}
-	if v, ok := os.LookupEnv("DEEPSEEK_SEARCH_FETCH_HOST"); ok {
-		cfg.host = v
+	if v, ok := os.LookupEnv("DEEPSEEK_SEARCH_FETCH_HOST"); ok && strings.TrimSpace(v) != "" {
+		cfg.host = strings.TrimSpace(v)
 	}
 	if v, ok := os.LookupEnv("DEEPSEEK_SEARCH_FETCH_PORT"); ok && strings.TrimSpace(v) != "" {
 		p, err := strconv.Atoi(strings.TrimSpace(v))
@@ -151,6 +159,9 @@ func loadConfigFor(fs *flag.FlagSet, values *flagValues, requireKey bool) (confi
 			return cfg, fmt.Errorf("环境变量 DEEPSEEK_SEARCH_FETCH_PORT 不是合法端口: %q", v)
 		}
 		cfg.port = p
+	}
+	if v, ok := os.LookupEnv("DEEPSEEK_DEFAULT_LANG"); ok && strings.TrimSpace(v) != "" {
+		cfg.defaultLang = strings.TrimSpace(v)
 	}
 
 	if setByFlag["deepseek-api-key"] {
@@ -215,6 +226,9 @@ func applyFileConfig(cfg *config, file fileConfig) error {
 	}
 	if file.CacheMaxBytes != nil {
 		cfg.cacheMaxBytes = *file.CacheMaxBytes
+	}
+	if file.DefaultLang != nil {
+		cfg.defaultLang = strings.TrimSpace(*file.DefaultLang)
 	}
 	if file.HTTPMaxIdleConns != nil {
 		cfg.httpMaxIdleConns = *file.HTTPMaxIdleConns
@@ -284,6 +298,17 @@ func validateConfig(cfg *config) error {
 	if cfg.cacheMaxBytes < 1<<20 {
 		return fmt.Errorf("cache_max_bytes 不能小于 1048576，当前为 %d", cfg.cacheMaxBytes)
 	}
+	switch {
+	case cfg.defaultLang == "":
+	case strings.EqualFold(cfg.defaultLang, "auto"):
+		cfg.defaultLang = "auto"
+	default:
+		code := strings.ToLower(cfg.defaultLang)
+		if len(code) != 2 || code[0] < 'a' || code[0] > 'z' || code[1] < 'a' || code[1] > 'z' {
+			return fmt.Errorf("default_lang 只能为空、auto 或两位语言码（如 zh），当前为 %q", cfg.defaultLang)
+		}
+		cfg.defaultLang = code
+	}
 	if cfg.httpMaxIdleConns < 1 {
 		return fmt.Errorf("http_max_idle_conns 必须大于等于 1，当前为 %d", cfg.httpMaxIdleConns)
 	}
@@ -301,8 +326,7 @@ func validateConfig(cfg *config) error {
 
 // ensureConfigFile 创建配置目录；配置文件不存在时写入模板。
 // 无法确定用户主目录时跳过文件，仅使用环境变量或启动参数。
-func ensureConfigFile() (string, error) {
-	dir := dataDir()
+func ensureConfigFile(dir string) (string, error) {
 	if dir == "" {
 		return "", nil
 	}
@@ -326,6 +350,7 @@ func ensureConfigFile() (string, error) {
 		FetchTimeout            string `json:"fetch_timeout"`
 		CacheTTL                string `json:"cache_ttl"`
 		CacheMaxBytes           int64  `json:"cache_max_bytes"`
+		DefaultLang             string `json:"default_lang"`
 		HTTPMaxIdleConns        int    `json:"http_max_idle_conns"`
 		HTTPMaxIdleConnsPerHost int    `json:"http_max_idle_conns_per_host"`
 		HTTPIdleConnTimeout     string `json:"http_idle_conn_timeout"`
@@ -340,6 +365,7 @@ func ensureConfigFile() (string, error) {
 		FetchTimeout:            durationText(defaultFetchTimeout),
 		CacheTTL:                durationText(defaultCacheTTL),
 		CacheMaxBytes:           defaultCacheMaxBytes,
+		DefaultLang:             "",
 		HTTPMaxIdleConns:        defaultHTTPMaxIdleConns,
 		HTTPMaxIdleConnsPerHost: defaultHTTPMaxIdleConnsPerHost,
 		HTTPIdleConnTimeout:     durationText(defaultHTTPIdleConnTimeout),
@@ -355,7 +381,23 @@ func ensureConfigFile() (string, error) {
 	return path, nil
 }
 
-func dataDir() string {
+// dataDirOverride 返回显式指定的数据目录：启动参数优先于环境变量，均未指定时返回空。
+func dataDirOverride(setByFlag map[string]bool, values *flagValues) string {
+	if setByFlag["data-dir"] {
+		return strings.TrimSpace(values.dataDir)
+	}
+	if v, ok := os.LookupEnv("DEEPSEEK_SEARCH_FETCH_HOME"); ok {
+		return strings.TrimSpace(v)
+	}
+	return ""
+}
+
+// resolveDataDir 确定数据目录：显式指定优先，否则回退到用户主目录下的默认目录。
+// 无法确定主目录且无显式指定时返回空字符串。
+func resolveDataDir(explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""

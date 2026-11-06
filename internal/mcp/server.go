@@ -19,6 +19,8 @@ type Options struct {
 	Cache   *openapi.Cache
 	Logger  *slog.Logger
 	Version string
+	// DefaultLang 非空时，搜索 query 未显式包含 lang: 会补全该语言码。
+	DefaultLang string
 }
 
 // Server 持有 HTTP 处理器。
@@ -40,7 +42,7 @@ func New(opts Options) *Server {
 			Logger:       logger,
 		},
 	)
-	for _, tool := range openapi.Tools(opts.Client, opts.Cache, logger) {
+	for _, tool := range openapi.Tools(opts.Client, opts.Cache, logger, opts.DefaultLang) {
 		srv.AddTool(
 			&sdkmcp.Tool{
 				Name:        tool.Name,

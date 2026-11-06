@@ -102,6 +102,10 @@ docker run --rm -e DEEPSEEK_API_KEY=sk-... \
 
 镜像同时发布到 GHCR：`ghcr.io/bob56621517/deepseek-search-fetch-mcp`。
 
+### Windows 服务
+
+以 Windows 服务方式开机自启，见 [Windows 服务部署](docs/deployment/windows-service.md)。
+
 ### 安装路径
 
 | 内容 | 路径 |
@@ -112,9 +116,11 @@ docker run --rm -e DEEPSEEK_API_KEY=sk-... \
 
 Windows 下 `~` 对应用户目录，例如 `C:\Users\<name>`。
 
+数据目录默认是 `~/.deepseek_search_fetch`，可用 `--data-dir` 或环境变量 `DEEPSEEK_SEARCH_FETCH_HOME` 覆盖（优先级：启动参数 > 环境变量 > 默认值）。配置、缓存、日志始终落在同一个数据目录下。
+
 - 首次启动时自动创建目录与配置文件模板；Key 为空。
 - 配置只在进程启动时读取一次，修改后需要重启服务。CLI 每次执行都会重新读取。
-- 如果无法确定用户主目录，程序会跳过配置文件创建，仅使用环境变量与启动参数；此时缓存不可用。
+- 如果无法确定用户主目录且未指定数据目录，程序会跳过配置文件创建，仅使用环境变量与启动参数；此时缓存不可用。以服务、容器等非交互账户运行时，务必显式指定数据目录或保证家目录指向用户目录（见 [Windows 服务部署](docs/deployment/windows-service.md)）。
 
 ### 日志
 
@@ -128,7 +134,7 @@ Windows 下 `~` 对应用户目录，例如 `C:\Users\<name>`。
 
 ## 2. 配置
 
-配置文件固定为 `~/.deepseek_search_fetch/config.json`：
+配置文件默认位于 `~/.deepseek_search_fetch/config.json`，数据目录可用 `--data-dir` 或 `DEEPSEEK_SEARCH_FETCH_HOME` 覆盖：
 
 ```json
 {
@@ -140,6 +146,7 @@ Windows 下 `~` 对应用户目录，例如 `C:\Users\<name>`。
   "fetch_timeout": "60s",
   "cache_ttl": "30m",
   "cache_max_bytes": 1073741824,
+  "default_lang": "",
   "http_max_idle_conns": 5,
   "http_max_idle_conns_per_host": 5,
   "http_idle_conn_timeout": "90s",
@@ -163,7 +170,8 @@ Windows 下 `~` 对应用户目录，例如 `C:\Users\<name>`。
 | `request_timeout` | `30s` | 搜索等常规上游请求超时 |
 | `fetch_timeout` | `60s` | 抓取请求超时；浏览器渲染较慢，独立配置 |
 | `cache_ttl` | `30m` | 缓存条目有效期，正文与摘要分别计算 |
-| `cache_max_bytes` | `1073741824`（1 GiB） | 缓存容量上限，最小 1 MiB |
+| `cache_max_bytes` | `1073741824`（1 GiB） | 页级活跃大小上限，最小 1 MiB，不代表磁盘占用 |
+| `default_lang` | 空 | 默认语言补全：空为关闭，`auto` 读取 `LC_ALL`/`LC_MESSAGES`/`LANG`，也可写两位语言码（如 `zh`）；写 `zh-CN` 会报错 |
 | `http_max_idle_conns` | `5` | 全局最大空闲连接数 |
 | `http_max_idle_conns_per_host` | `5` | 单主机最大空闲连接数 |
 | `http_idle_conn_timeout` | `90s` | 空闲连接超时 |
@@ -176,8 +184,10 @@ Windows 下 `~` 对应用户目录，例如 `C:\Users\<name>`。
 |---|---|
 | `DEEPSEEK_API_KEY` | `deepseek_api_key` |
 | `DEEPSEEK_API_URL` | `deepseek_api_url` |
+| `DEEPSEEK_SEARCH_FETCH_HOME` | 数据目录（默认 `~/.deepseek_search_fetch`） |
 | `DEEPSEEK_SEARCH_FETCH_HOST` | `server_host` |
 | `DEEPSEEK_SEARCH_FETCH_PORT` | `server_port` |
+| `DEEPSEEK_DEFAULT_LANG` | `default_lang` |
 
 ### 命令行参数
 
@@ -192,6 +202,7 @@ deepseek-search-fetch-mcp search --deepseek-api-key sk-... "query"
 |---|---|---|
 | `--deepseek-api-key` | 全部 | 覆盖 API Key |
 | `--deepseek-api-url` | 全部 | 覆盖 Base URL |
+| `--data-dir` | 全部 | 数据目录，覆盖默认 `~/.deepseek_search_fetch` |
 | `--host` | `server` | 监听地址 |
 | `--port` | `server` | 监听端口 |
 | `--count` | `search` | 返回条数，默认 10 |
@@ -336,7 +347,7 @@ deepseek-search-fetch-mcp fetch --refresh "https://example.com/article"
 | `source` | `cache`（命中缓存）或 `upstream`（实时抓取） |
 | `cachedAt` | 缓存时间，UTC RFC 3339 |
 | `summaryQuery` | 生成该摘要的搜索词 |
-| `hint` | 提示信息；摘要不可用（未命中或超过 8000 个字符）时说明已回退正文 |
+| `hint` | 提示信息；摘要不可用（未命中或超过 8000 个字符）时说明已回退正文。仅出现在回退为正文的输出中 |
 
 ### `flushall`
 
@@ -411,6 +422,8 @@ deepseek-search-fetch-mcp server
 ### 工具一：`web_ext_search`
 
 扩展网页搜索。支持 `site:`、`-site:`、`lang:`、`after:`、`before:`、精确短语等语法。
+
+配置 `default_lang` 后，query 中**没有** `lang:` 操作符时，服务端会按配置追加 ` lang:<code>`；已经写了 `lang:` 的 query 不会被改动。补全后超过 128 字符时不补全。原生 Windows 默认没有 `LANG` 等环境变量，`auto` 会关闭，建议显式配置语言码。
 
 输入：
 
@@ -529,11 +542,11 @@ deepseek-search-fetch-mcp server
 | `title` | 页面标题 |
 | `content` | 完整正文 |
 | `summary` | 搜索返回的正文精简版 |
-| `summary_query` | 生成摘要的搜索词 |
+| `summary_query` | 生成摘要的搜索词；配置 `default_lang` 时可能包含自动补全的 `lang:xx` |
 | `content_source` | `search` 或 `fetch` |
 | `content_at` / `summary_at` | 正文/摘要各自的写入时间 |
 | `last_used` | 最近使用时间（读或写），用于 LRU 淘汰 |
-| `size_bytes` | 条目占用字节数 |
+| `size_bytes` | 历史字段，按 title/content/summary 的字节数累加；仅用于排查，不参与容量判断 |
 
 ### URL 规范化
 
@@ -551,10 +564,11 @@ deepseek-search-fetch-mcp server
 ### TTL 与容量
 
 - `cache_ttl`：默认 30 分钟，正文与摘要分别按各自时间戳判断是否过期
-- `cache_max_bytes`：默认 1 GiB，超过后按 `last_used` 淘汰最久未使用的条目
+- `cache_max_bytes`：默认 1 GiB，按**页级活跃大小**判断是否超限，超过后按 `last_used` 批量淘汰最久未使用的条目
 - 过期清理在启动时执行一次；运行期间写入后最多每分钟触发一次
 - TTL 清理：只有正文与摘要**都过期**时才删除整行
-- 容量淘汰：总大小超过 `cache_max_bytes` 时按 `last_used` 删除最久未使用的行，不论是否过期
+- 容量淘汰：活跃大小 `(page_count - freelist_count) × page_size` 超过 `cache_max_bytes` 时，从最久未使用的条目开始批量删除，直到降到上限的 95%；删除粒度是页，删掉少量小行可能不会立即降低指标
+- `cache_max_bytes` 是**逻辑活跃页上限，不是磁盘占用上限**：`cache.db` 与 `cache.db-wal` 可能明显更大，只有 `flushall` 的 VACUUM 会回收文件空间
 - 读取命中会更新 `last_used`
 
 ### search 如何写缓存
@@ -572,6 +586,7 @@ deepseek-search-fetch-mcp server
 - 若已有**未过期的 fetch 正文**，不会被 search 正文覆盖（无论长短）
 - 否则，用 search 返回的正文写入，`content_source=search`
 - 摘要：搜索返回非空摘要时，覆盖旧摘要并记录 `summary_query`；搜索未返回摘要时保留未过期的旧摘要
+- 既无正文也无摘要的结果跳过写入，避免留下空行
 - 所有结果在同一个事务中写入
 
 **搜索不会用缓存结果替代上游请求。** 每次搜索都会请求上游；写入时会读取已有条目做合并（避免覆盖未过期的 fetch 正文），但不会因为缓存命中而跳过搜索。

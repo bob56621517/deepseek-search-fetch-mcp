@@ -64,6 +64,11 @@ func (f *fakeUpstream) calls() []capturedRequest {
 
 func newTools(t *testing.T) ([]Tool, *fakeUpstream, *Cache) {
 	t.Helper()
+	return newToolsWithLang(t, "")
+}
+
+func newToolsWithLang(t *testing.T, defaultLang string) ([]Tool, *fakeUpstream, *Cache) {
+	t.Helper()
 	up := newFakeUpstream(t)
 	cache, err := OpenCache(CacheOptions{
 		Path: filepath.Join(t.TempDir(), "cache.db"),
@@ -74,7 +79,7 @@ func newTools(t *testing.T) ([]Tool, *fakeUpstream, *Cache) {
 	}
 	t.Cleanup(func() { _ = cache.Close() })
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	tools := Tools(NewClient(up.server.URL, "test-key", DefaultOptions()), cache, logger)
+	tools := Tools(NewClient(up.server.URL, "test-key", DefaultOptions()), cache, logger, defaultLang)
 	return tools, up, cache
 }
 
@@ -389,7 +394,7 @@ func TestFetchFullContentForCLI(t *testing.T) {
 	}
 
 	// MCP 工具仍然受分页上限约束。
-	all := Tools(NewClient(up.server.URL, "test-key", DefaultOptions()), cache, logger)
+	all := Tools(NewClient(up.server.URL, "test-key", DefaultOptions()), cache, logger, "")
 	toolBody, err := findTool(t, all, "web_ext_fetch").Call(
 		context.Background(),
 		json.RawMessage(`{"url":"https://example.com/long"}`),
@@ -591,6 +596,9 @@ func TestFetchSummaryTooLongFallsBackToContent(t *testing.T) {
 	if out.Kind != "content" || out.Content != "body" || out.HasSummary || out.Hint == "" {
 		t.Fatalf("超长摘要应按未命中处理并回退正文: %#v", out)
 	}
+	if !strings.Contains(out.Hint, "超过 8000") || strings.Contains(out.Hint, "请先调用 web_ext_search") {
+		t.Fatalf("超长摘要的 hint 应说明原因，且不引导重复搜索: %q", out.Hint)
+	}
 	if out.Source != "cache" {
 		t.Fatalf("正文应命中缓存: %#v", out)
 	}
@@ -637,5 +645,80 @@ func TestFetchValidation(t *testing.T) {
 				t.Fatal("参数校验失败时不应请求上游")
 			}
 		})
+	}
+}
+
+func TestSearchAppliesDefaultLang(t *testing.T) {
+	all, up, cache := newToolsWithLang(t, "zh")
+	up.respond(200, `{"results":[{"title":"go","url":"https://go.dev","snippet":"short","summary":"sum","content":"body"}]}`)
+
+	if _, err := findTool(t, all, "web_ext_search").Call(
+		context.Background(), json.RawMessage(`{"query":"golang"}`)); err != nil {
+		t.Fatalf("调用失败: %v", err)
+	}
+
+	calls := up.calls()
+	if len(calls) != 1 {
+		t.Fatalf("上游调用次数不符: %d", len(calls))
+	}
+	payload := decodeBody(t, calls[0].body)
+	if payload["query"] != "golang lang:zh" {
+		t.Fatalf("默认语言未补全: %#v", payload)
+	}
+	page, ok, err := cache.GetSummary(context.Background(), "https://go.dev")
+	if err != nil || !ok {
+		t.Fatalf("摘要未写入缓存: ok=%v err=%v", ok, err)
+	}
+	if page.SummaryQuery != "golang lang:zh" {
+		t.Fatalf("缓存 summary_query 应使用补全后的 query，实际 %q", page.SummaryQuery)
+	}
+}
+
+func TestSearchKeepsExplicitLang(t *testing.T) {
+	all, up, _ := newToolsWithLang(t, "zh")
+	up.respond(200, `{"results":[]}`)
+
+	if _, err := findTool(t, all, "web_ext_search").Call(
+		context.Background(), json.RawMessage(`{"query":"golang lang:en"}`)); err != nil {
+		t.Fatalf("调用失败: %v", err)
+	}
+	payload := decodeBody(t, up.calls()[0].body)
+	if payload["query"] != "golang lang:en" {
+		t.Fatalf("显式 lang 不应被改动: %#v", payload)
+	}
+}
+
+func TestSearchDirectAppliesDefaultLang(t *testing.T) {
+	up := newFakeUpstream(t)
+	up.respond(200, `{"results":[]}`)
+	cache := newTestCache(t, time.Minute, 1<<20)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	if _, err := SearchDirect(context.Background(),
+		NewClient(up.server.URL, "test-key", DefaultOptions()), cache, logger,
+		SearchOptions{Query: "golang", DefaultLang: "zh"}); err != nil {
+		t.Fatalf("搜索失败: %v", err)
+	}
+	payload := decodeBody(t, up.calls()[0].body)
+	if payload["query"] != "golang lang:zh" {
+		t.Fatalf("CLI 默认语言未补全: %#v", payload)
+	}
+}
+
+func TestSearchDirectSkipsTooLongDefaultLang(t *testing.T) {
+	up := newFakeUpstream(t)
+	up.respond(200, `{"results":[]}`)
+	cache := newTestCache(t, time.Minute, 1<<20)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	long := strings.Repeat("a", maxQueryRunes)
+
+	if _, err := SearchDirect(context.Background(),
+		NewClient(up.server.URL, "test-key", DefaultOptions()), cache, logger,
+		SearchOptions{Query: long, DefaultLang: "zh"}); err != nil {
+		t.Fatalf("搜索失败: %v", err)
+	}
+	payload := decodeBody(t, up.calls()[0].body)
+	if payload["query"] != long {
+		t.Fatalf("超长时不应补全: %#v", payload)
 	}
 }

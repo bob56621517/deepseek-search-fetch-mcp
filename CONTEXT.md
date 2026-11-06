@@ -7,7 +7,7 @@
 ## 能力与工具
 
 **Search (搜索)**:
-按 query 检索网页,返回结构化结果列表。对应上游 `POST /v1/tools/search`。只返回 `snippet`,不返回 `summary`、`content` 与 `site_icon`。搜索时会向上游请求 `need_content=true`,把每条结果的正文与摘要写入缓存,供后续 Fetch 使用。
+按 query 检索网页,返回结构化结果列表。对应上游 `POST /v1/tools/search`。只返回 `snippet`,不返回 `summary`、`content` 与 `site_icon`。搜索时会向上游请求 `need_content=true`,把每条结果的正文与摘要写入缓存,供后续 Fetch 使用。配置 `default_lang` 后,query 未写 `lang:` 时会自动补全默认语言。
 _Avoid_: 检索、查询接口
 
 **Fetch (抓取)**:
@@ -15,7 +15,7 @@ _Avoid_: 检索、查询接口
 _Avoid_: 下载、爬取
 
 **缓存 (Cache)**:
-进程间共享的 SQLite 缓存,固定文件 `~/.deepseek_search_fetch/cache.db`。以规范化 URL 为键,分别记录正文与摘要及各自时间戳;TTL 与容量可配置。缓存故障只记日志,不影响搜索与抓取主流程。
+进程间共享的 SQLite 缓存,默认文件 `~/.deepseek_search_fetch/cache.db`(数据目录可用 `--data-dir`/`DEEPSEEK_SEARCH_FETCH_HOME` 覆盖)。以规范化 URL 为键,分别记录正文与摘要及各自时间戳;TTL 与容量可配置,容量按页级活跃大小判断(不是磁盘占用)。缓存故障只记日志,不影响搜索与抓取主流程。
 _Avoid_: 存储、数据库
 
 **命令行 (CLI)**:
@@ -45,7 +45,7 @@ _Avoid_: 连接、上下文
 _Avoid_: 错误码、异常
 
 **配置文件 (Config file)**:
-固定路径 `~/.deepseek_search_fetch/config.json`,承载 `deepseek_api_key`、`deepseek_api_url`、`server_host`、`server_port`、超时参数与缓存参数(`cache_ttl`、`cache_max_bytes`)。首次启动时自动创建。
+默认路径 `~/.deepseek_search_fetch/config.json`(数据目录可配置),承载 `deepseek_api_key`、`deepseek_api_url`、`server_host`、`server_port`、超时参数、缓存参数(`cache_ttl`、`cache_max_bytes`)与默认语言(`default_lang`)。首次启动时自动创建。
 _Avoid_: 设置、环境
 
 ## 运行时

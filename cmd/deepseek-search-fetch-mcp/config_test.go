@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +20,8 @@ func isolateHome(t *testing.T) string {
 	unsetEnv(t, "DEEPSEEK_API_URL")
 	unsetEnv(t, "DEEPSEEK_SEARCH_FETCH_HOST")
 	unsetEnv(t, "DEEPSEEK_SEARCH_FETCH_PORT")
+	unsetEnv(t, "DEEPSEEK_SEARCH_FETCH_HOME")
+	unsetEnv(t, "DEEPSEEK_DEFAULT_LANG")
 	return dir
 }
 
@@ -61,6 +64,7 @@ func TestLoadFromFixedConfigFile(t *testing.T) {
 		"fetch_timeout": "75s",
 		"cache_ttl": "45m",
 		"cache_max_bytes": 2097152,
+		"default_lang": "zh",
 		"http_max_idle_conns": 8,
 		"http_max_idle_conns_per_host": 4,
 		"http_idle_conn_timeout": "60s",
@@ -79,6 +83,7 @@ func TestLoadFromFixedConfigFile(t *testing.T) {
 		cfg.fetchTimeout != 75*time.Second ||
 		cfg.cacheTTL != 45*time.Minute ||
 		cfg.cacheMaxBytes != 2097152 ||
+		cfg.defaultLang != "zh" ||
 		cfg.httpMaxIdleConns != 8 ||
 		cfg.httpMaxIdleConnsPerHost != 4 ||
 		cfg.httpIdleConnTimeout != 60*time.Second ||
@@ -168,6 +173,9 @@ func TestFirstRunCreatesConfigFile(t *testing.T) {
 	}
 	if file["cache_max_bytes"] != float64(defaultCacheMaxBytes) {
 		t.Fatalf("模板中的 cache_max_bytes 不符: %s", data)
+	}
+	if file["default_lang"] != "" {
+		t.Fatalf("模板中的 default_lang 应为空: %s", data)
 	}
 	if file["http_max_idle_conns"] != float64(defaultHTTPMaxIdleConns) {
 		t.Fatalf("模板中的 http_max_idle_conns 不符: %s", data)
@@ -292,5 +300,179 @@ func TestInvalidAPIURL(t *testing.T) {
 	_, err := loadConfig([]string{"--deepseek-api-url=not-a-url"}, io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "API URL 不合法") {
 		t.Fatalf("API URL 非法时应报错: %v", err)
+	}
+}
+
+func TestEmptyEnvDoesNotOverrideFile(t *testing.T) {
+	home := isolateHome(t)
+	writeConfigFile(t, home, `{
+		"deepseek_api_key": "file-key",
+		"deepseek_api_url": "https://file.example.com",
+		"server_host": "0.0.0.0",
+		"server_port": 18090
+	}`)
+	t.Setenv("DEEPSEEK_API_KEY", "")
+	t.Setenv("DEEPSEEK_API_URL", "")
+	t.Setenv("DEEPSEEK_SEARCH_FETCH_HOST", "   ")
+	t.Setenv("DEEPSEEK_SEARCH_FETCH_PORT", "")
+
+	cfg, err := loadConfig(nil, io.Discard)
+	if err != nil {
+		t.Fatalf("加载失败: %v", err)
+	}
+	if cfg.apiKey != "file-key" || cfg.apiURL != "https://file.example.com" || cfg.host != "0.0.0.0" || cfg.port != 18090 {
+		t.Fatalf("空环境变量不应覆盖配置文件: %#v", cfg)
+	}
+}
+
+func TestDefaultDataDir(t *testing.T) {
+	home := isolateHome(t)
+	t.Setenv("DEEPSEEK_API_KEY", "env-key")
+
+	cfg, err := loadConfig(nil, io.Discard)
+	if err != nil {
+		t.Fatalf("加载失败: %v", err)
+	}
+	want := filepath.Join(home, dataDirName)
+	if cfg.dataDir != want {
+		t.Fatalf("默认数据目录应为 %q，实际 %q", want, cfg.dataDir)
+	}
+}
+
+func TestDataDirFlag(t *testing.T) {
+	isolateHome(t)
+	t.Setenv("DEEPSEEK_API_KEY", "env-key")
+	dir := t.TempDir()
+
+	cfg, err := loadConfig([]string{"--data-dir=" + dir}, io.Discard)
+	if err != nil {
+		t.Fatalf("加载失败: %v", err)
+	}
+	if cfg.dataDir != dir {
+		t.Fatalf("--data-dir 未生效: %q", cfg.dataDir)
+	}
+	if _, err := os.Stat(filepath.Join(dir, configFileName)); err != nil {
+		t.Fatalf("配置文件应落在 data-dir 下: %v", err)
+	}
+}
+
+func TestDataDirEnv(t *testing.T) {
+	isolateHome(t)
+	t.Setenv("DEEPSEEK_API_KEY", "env-key")
+	dir := t.TempDir()
+	t.Setenv("DEEPSEEK_SEARCH_FETCH_HOME", dir)
+
+	cfg, err := loadConfig(nil, io.Discard)
+	if err != nil {
+		t.Fatalf("加载失败: %v", err)
+	}
+	if cfg.dataDir != dir {
+		t.Fatalf("DEEPSEEK_SEARCH_FETCH_HOME 未生效: %q", cfg.dataDir)
+	}
+	if _, err := os.Stat(filepath.Join(dir, configFileName)); err != nil {
+		t.Fatalf("配置文件应落在 data-dir 下: %v", err)
+	}
+}
+
+func TestDataDirFlagOverridesEnv(t *testing.T) {
+	isolateHome(t)
+	t.Setenv("DEEPSEEK_API_KEY", "env-key")
+	envDir := t.TempDir()
+	flagDir := t.TempDir()
+	t.Setenv("DEEPSEEK_SEARCH_FETCH_HOME", envDir)
+
+	cfg, err := loadConfig([]string{"--data-dir=" + flagDir}, io.Discard)
+	if err != nil {
+		t.Fatalf("加载失败: %v", err)
+	}
+	if cfg.dataDir != flagDir {
+		t.Fatalf("--data-dir 应优先于环境变量: %q", cfg.dataDir)
+	}
+}
+
+func TestResolveDefaultLang(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	t.Setenv("LC_ALL", "")
+	t.Setenv("LC_MESSAGES", "")
+	t.Setenv("LANG", "zh_CN.UTF-8")
+
+	if got := resolveDefaultLang("auto", logger); got != "zh" {
+		t.Fatalf("auto 应解析为 zh，实际 %q", got)
+	}
+	if got := resolveDefaultLang("en", logger); got != "en" {
+		t.Fatalf("显式语言码应原样返回，实际 %q", got)
+	}
+	if got := resolveDefaultLang("", logger); got != "" {
+		t.Fatalf("关闭时应返回空，实际 %q", got)
+	}
+
+	t.Setenv("LANG", "")
+	if got := resolveDefaultLang("auto", logger); got != "" {
+		t.Fatalf("检测不到语言环境变量时应返回空，实际 %q", got)
+	}
+}
+
+func TestDefaultLangEnvOverridesFile(t *testing.T) {
+	home := isolateHome(t)
+	writeConfigFile(t, home, `{"deepseek_api_key":"k","default_lang":"en"}`)
+	t.Setenv("DEEPSEEK_DEFAULT_LANG", "zh")
+
+	cfg, err := loadConfig(nil, io.Discard)
+	if err != nil {
+		t.Fatalf("加载失败: %v", err)
+	}
+	if cfg.defaultLang != "zh" {
+		t.Fatalf("环境变量应覆盖配置文件: %q", cfg.defaultLang)
+	}
+}
+
+func TestEmptyDefaultLangEnvDoesNotOverrideFile(t *testing.T) {
+	home := isolateHome(t)
+	writeConfigFile(t, home, `{"deepseek_api_key":"k","default_lang":"zh"}`)
+	t.Setenv("DEEPSEEK_DEFAULT_LANG", "")
+
+	cfg, err := loadConfig(nil, io.Discard)
+	if err != nil {
+		t.Fatalf("加载失败: %v", err)
+	}
+	if cfg.defaultLang != "zh" {
+		t.Fatalf("空环境变量不应覆盖配置文件: %q", cfg.defaultLang)
+	}
+}
+
+func TestDefaultLangSettings(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		want  string
+		ok    bool
+	}{
+		{"关闭", "", "", true},
+		{"auto", "auto", "auto", true},
+		{"auto 大写", "AUTO", "auto", true},
+		{"两位语言码", "zh", "zh", true},
+		{"两位语言码大写", "EN", "en", true},
+		{"带地区", "zh-CN", "", false},
+		{"三位语言码", "fil", "", false},
+		{"非字母", "z1", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := isolateHome(t)
+			writeConfigFile(t, home, `{"deepseek_api_key":"k","default_lang":"`+tc.value+`"}`)
+			cfg, err := loadConfig(nil, io.Discard)
+			if tc.ok {
+				if err != nil {
+					t.Fatalf("加载失败: %v", err)
+				}
+				if cfg.defaultLang != tc.want {
+					t.Fatalf("default_lang = %q, want %q", cfg.defaultLang, tc.want)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("default_lang=%q 应报错", tc.value)
+			}
+		})
 	}
 }

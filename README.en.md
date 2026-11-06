@@ -102,6 +102,10 @@ docker run --rm -e DEEPSEEK_API_KEY=sk-... \
 
 The image is also published to GHCR: `ghcr.io/bob56621517/deepseek-search-fetch-mcp`.
 
+### Windows service
+
+To run as an auto-start Windows service, see [Windows service deployment](docs/deployment/windows-service.md).
+
 ### Install paths
 
 | Content | Path |
@@ -112,9 +116,11 @@ The image is also published to GHCR: `ghcr.io/bob56621517/deepseek-search-fetch-
 
 On Windows `~` maps to your user directory, e.g. `C:\Users\<name>`.
 
+The data directory defaults to `~/.deepseek_search_fetch` and can be overridden with `--data-dir` or the `DEEPSEEK_SEARCH_FETCH_HOME` environment variable (precedence: startup flag > environment variable > default). Config, cache, and logs always live in the same data directory.
+
 - On first start the directory and a config template are created automatically; the Key is empty.
 - Config is read once at process start; restart the service after changing it. CLI commands re-read it on every run.
-- If the user home directory cannot be determined, the program skips config file creation and uses only environment variables and startup flags; caching is unavailable in that case.
+- If the user home directory cannot be determined and no data directory is set, the program skips config file creation and uses only environment variables and startup flags; caching is unavailable in that case. When running under a non-interactive account such as a service or container, always set the data directory explicitly or make sure the home directory points to the user directory (see [Windows service deployment](docs/deployment/windows-service.md)).
 
 ### Logging
 
@@ -128,7 +134,7 @@ On Windows `~` maps to your user directory, e.g. `C:\Users\<name>`.
 
 ## 2. Configuration
 
-The config file is fixed at `~/.deepseek_search_fetch/config.json`:
+The config file defaults to `~/.deepseek_search_fetch/config.json`; the data directory can be overridden with `--data-dir` or `DEEPSEEK_SEARCH_FETCH_HOME`:
 
 ```json
 {
@@ -140,6 +146,7 @@ The config file is fixed at `~/.deepseek_search_fetch/config.json`:
   "fetch_timeout": "60s",
   "cache_ttl": "30m",
   "cache_max_bytes": 1073741824,
+  "default_lang": "",
   "http_max_idle_conns": 5,
   "http_max_idle_conns_per_host": 5,
   "http_idle_conn_timeout": "90s",
@@ -163,7 +170,8 @@ The config file is fixed at `~/.deepseek_search_fetch/config.json`:
 | `request_timeout` | `30s` | Timeout for regular upstream requests such as search |
 | `fetch_timeout` | `60s` | Timeout for fetch requests; browser rendering is slower, so it is configured separately |
 | `cache_ttl` | `30m` | Cache entry lifetime; content and summary are evaluated separately |
-| `cache_max_bytes` | `1073741824` (1 GiB) | Cache capacity limit, minimum 1 MiB |
+| `cache_max_bytes` | `1073741824` (1 GiB) | Page-level live-size limit, minimum 1 MiB; not a disk-usage limit |
+| `default_lang` | empty | Default language completion: empty disables it, `auto` reads `LC_ALL`/`LC_MESSAGES`/`LANG`, or set a two-letter code such as `zh`; `zh-CN` is rejected |
 | `http_max_idle_conns` | `5` | Maximum idle connections overall |
 | `http_max_idle_conns_per_host` | `5` | Maximum idle connections per host |
 | `http_idle_conn_timeout` | `90s` | Idle connection timeout |
@@ -176,8 +184,10 @@ The config file is fixed at `~/.deepseek_search_fetch/config.json`:
 |---|---|
 | `DEEPSEEK_API_KEY` | `deepseek_api_key` |
 | `DEEPSEEK_API_URL` | `deepseek_api_url` |
+| `DEEPSEEK_SEARCH_FETCH_HOME` | Data directory (default `~/.deepseek_search_fetch`) |
 | `DEEPSEEK_SEARCH_FETCH_HOST` | `server_host` |
 | `DEEPSEEK_SEARCH_FETCH_PORT` | `server_port` |
+| `DEEPSEEK_DEFAULT_LANG` | `default_lang` |
 
 ### Command-line flags
 
@@ -192,6 +202,7 @@ deepseek-search-fetch-mcp search --deepseek-api-key sk-... "query"
 |---|---|---|
 | `--deepseek-api-key` | all | Override the API Key |
 | `--deepseek-api-url` | all | Override the base URL |
+| `--data-dir` | all | Data directory, overriding the default `~/.deepseek_search_fetch` |
 | `--host` | `server` | Listener address |
 | `--port` | `server` | Listener port |
 | `--count` | `search` | Number of results, default 10 |
@@ -336,7 +347,7 @@ Field reference:
 | `source` | `cache` (cache hit) or `upstream` (live fetch) |
 | `cachedAt` | Cache timestamp, UTC RFC 3339 |
 | `summaryQuery` | Search query that produced the summary |
-| `hint` | Advisory message; explains that content was returned because the summary is unavailable (missed or longer than 8000 runes) |
+| `hint` | Advisory message; explains that content was returned because the summary is unavailable (missed or longer than 8000 runes). Only present when falling back to content |
 
 ### `flushall`
 
@@ -411,6 +422,8 @@ Configuration fields differ slightly between clients; follow your client's docum
 ### Tool 1: `web_ext_search`
 
 Extended web search. Supports syntax such as `site:`, `-site:`, `lang:`, `after:`, `before:`, and exact phrases.
+
+When `default_lang` is configured and the query has **no** `lang:` operator, the server appends ` lang:<code>`; queries that already contain `lang:` are left untouched. Completion is skipped if it would exceed 128 characters. Native Windows usually has no `LANG`-style variables, so `auto` resolves to disabled there; set an explicit language code instead.
 
 Input:
 
@@ -529,11 +542,11 @@ Main fields of the `web_cache` table:
 | `title` | Page title |
 | `content` | Full content |
 | `summary` | Condensed content returned by search |
-| `summary_query` | Search query that produced the summary |
+| `summary_query` | Search query that produced the summary; may include an auto-appended `lang:xx` when `default_lang` is configured |
 | `content_source` | `search` or `fetch` |
 | `content_at` / `summary_at` | Write timestamps for content/summary respectively |
 | `last_used` | Last use time (read or write), used for LRU eviction |
-| `size_bytes` | Bytes occupied by the entry |
+| `size_bytes` | Historical field: sum of title/content/summary bytes; kept for inspection only and not used for capacity decisions |
 
 ### URL normalization
 
@@ -551,10 +564,11 @@ The `url` field in `web_ext_fetch` responses also uses the normalized value, so 
 ### TTL and capacity
 
 - `cache_ttl`: defaults to 30 minutes; content and summary are judged stale by their own timestamps
-- `cache_max_bytes`: defaults to 1 GiB; beyond that, least-recently-used entries are evicted by `last_used`
+- `cache_max_bytes`: defaults to 1 GiB; the limit is checked against the **page-level live size**, and least-recently-used entries are batch-evicted by `last_used` when exceeded
 - Expired cleanup runs once at startup; during runtime it fires at most once per minute after a write
 - TTL cleanup: a row is deleted only when **both** content and summary are expired
-- Capacity eviction: when total size exceeds `cache_max_bytes`, rows are deleted by `last_used` regardless of expiry
+- Capacity eviction: when the live size `(page_count - freelist_count) × page_size` exceeds `cache_max_bytes`, rows are deleted oldest-first in batches until the cache drops to 95% of the limit; deletion granularity is pages, so removing a few small rows may not lower the metric immediately
+- `cache_max_bytes` is a **logical live-page limit, not a disk-usage limit**: `cache.db` and `cache.db-wal` can be noticeably larger, and only the VACUUM in `flushall` reclaims file space
 - A read hit updates `last_used`
 
 ### How search writes the cache
@@ -572,6 +586,7 @@ Write rules:
 - An existing **unexpired fetch content** is never overwritten by search content, regardless of length
 - Otherwise the content returned by search is written with `content_source=search`
 - Summary: when search returns a non-empty summary it overwrites the old one and records `summary_query`; when it returns none, an unexpired old summary is kept
+- Results with neither content nor summary are skipped to avoid empty rows
 - All results are written in a single transaction
 
 **Search never replaces the upstream request with cached results.** Every search queries upstream; writes read existing entries to merge (so unexpired fetch content is preserved), but a cache hit never skips the search.
