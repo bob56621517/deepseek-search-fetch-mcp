@@ -17,7 +17,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `web_ext_search` 只返回 `snippet`,没有 `summary` 参数;搜索时固定向上游请求 `need_content=true`,把每条结果的 `content`、`summary` 写入 SQLite 缓存。
 - 搜索 `count` 默认 10;低于 5 自动按 5 处理;超过 50 报错。
 - `web_ext_fetch` 缓存优先,支持 `summary`(读取搜索缓存的摘要,不分页)、`offset`/`limit`(正文按 rune 分页)与 `refresh`(跳过缓存强制刷新)。
-- 缓存使用 SQLite,文件为 `~/.deepseek_search_fetch/cache.db`;TTL 默认 30 分钟、容量默认 1 GiB,均可配置。缓存故障只记日志,不影响主功能。
+- 缓存使用 SQLite,文件为 `~/.deepseek_search_fetch/cache.db`;TTL 默认 30 分钟、容量默认 1 GiB,均可配置;容量按页级活跃大小判断,不是磁盘占用。缓存故障只记日志,不影响主功能。
 - 接口契约以 `api/openapi.yaml` 为准;缓存与 CLI 属于包装层行为,不改变上游契约。
 - 唯一凭据是 DeepSeek API Key。
 - 默认监听端口 `18081`。
@@ -84,7 +84,7 @@ git merge origin/main
 - 配置文件:`deepseek_api_key`、`deepseek_api_url`、`server_host`、`server_port`、`request_timeout`、`fetch_timeout`、`cache_ttl`、`cache_max_bytes`、`http_max_idle_conns`、`http_max_idle_conns_per_host`、`http_idle_conn_timeout`、`http_tls_handshake_timeout`、`reset_connection_on_error`
 - 数据目录默认 `~/.deepseek_search_fetch`,可用 `--data-dir` 或 `DEEPSEEK_SEARCH_FETCH_HOME` 覆盖(优先级:启动参数 > 环境变量 > 默认);配置、缓存、日志三者落在同一目录;以服务/容器等非交互账户运行时必须显式指定
 - `fetch_timeout` 只作用于抓取请求(浏览器渲染更慢),搜索仍使用 `request_timeout`
-- `cache_ttl` 是缓存条目有效期,默认 `30m`;`cache_max_bytes` 是缓存容量上限,默认 `1073741824`(1 GiB)
+- `cache_ttl` 是缓存条目有效期,默认 `30m`;`cache_max_bytes` 是页级活跃大小上限,默认 `1073741824`(1 GiB),不代表磁盘占用
 - 缓存文件:`~/.deepseek_search_fetch/cache.db`(SQLite,WAL 模式,权限 0600),可用 `flushall` 清空
 - `reset_connection_on_error` 为 true 时,任何上游调用失败都会丢弃空闲连接,下次调用重新建连
 - 日志目录:`~/.deepseek_search_fetch/logs/`,文件 `server.log`

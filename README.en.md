@@ -541,7 +541,7 @@ Main fields of the `web_cache` table:
 | `content_source` | `search` or `fetch` |
 | `content_at` / `summary_at` | Write timestamps for content/summary respectively |
 | `last_used` | Last use time (read or write), used for LRU eviction |
-| `size_bytes` | Bytes occupied by the entry |
+| `size_bytes` | Historical field: sum of title/content/summary bytes; kept for inspection only and not used for capacity decisions |
 
 ### URL normalization
 
@@ -559,10 +559,11 @@ The `url` field in `web_ext_fetch` responses also uses the normalized value, so 
 ### TTL and capacity
 
 - `cache_ttl`: defaults to 30 minutes; content and summary are judged stale by their own timestamps
-- `cache_max_bytes`: defaults to 1 GiB; beyond that, least-recently-used entries are evicted by `last_used`
+- `cache_max_bytes`: defaults to 1 GiB; the limit is checked against the **page-level live size**, and least-recently-used entries are batch-evicted by `last_used` when exceeded
 - Expired cleanup runs once at startup; during runtime it fires at most once per minute after a write
 - TTL cleanup: a row is deleted only when **both** content and summary are expired
-- Capacity eviction: when total size exceeds `cache_max_bytes`, rows are deleted by `last_used` regardless of expiry
+- Capacity eviction: when the live size `(page_count - freelist_count) × page_size` exceeds `cache_max_bytes`, rows are deleted oldest-first in batches until the cache drops to 95% of the limit; deletion granularity is pages, so removing a few small rows may not lower the metric immediately
+- `cache_max_bytes` is a **logical live-page limit, not a disk-usage limit**: `cache.db` and `cache.db-wal` can be noticeably larger, and only the VACUUM in `flushall` reclaims file space
 - A read hit updates `last_used`
 
 ### How search writes the cache

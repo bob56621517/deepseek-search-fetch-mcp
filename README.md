@@ -541,7 +541,7 @@ deepseek-search-fetch-mcp server
 | `content_source` | `search` 或 `fetch` |
 | `content_at` / `summary_at` | 正文/摘要各自的写入时间 |
 | `last_used` | 最近使用时间（读或写），用于 LRU 淘汰 |
-| `size_bytes` | 条目占用字节数 |
+| `size_bytes` | 历史字段，按 title/content/summary 的字节数累加；仅用于排查，不参与容量判断 |
 
 ### URL 规范化
 
@@ -559,10 +559,11 @@ deepseek-search-fetch-mcp server
 ### TTL 与容量
 
 - `cache_ttl`：默认 30 分钟，正文与摘要分别按各自时间戳判断是否过期
-- `cache_max_bytes`：默认 1 GiB，超过后按 `last_used` 淘汰最久未使用的条目
+- `cache_max_bytes`：默认 1 GiB，按**页级活跃大小**判断是否超限，超过后按 `last_used` 批量淘汰最久未使用的条目
 - 过期清理在启动时执行一次；运行期间写入后最多每分钟触发一次
 - TTL 清理：只有正文与摘要**都过期**时才删除整行
-- 容量淘汰：总大小超过 `cache_max_bytes` 时按 `last_used` 删除最久未使用的行，不论是否过期
+- 容量淘汰：活跃大小 `(page_count - freelist_count) × page_size` 超过 `cache_max_bytes` 时，从最久未使用的条目开始批量删除，直到降到上限的 95%；删除粒度是页，删掉少量小行可能不会立即降低指标
+- `cache_max_bytes` 是**逻辑活跃页上限，不是磁盘占用上限**：`cache.db` 与 `cache.db-wal` 可能明显更大，只有 `flushall` 的 VACUUM 会回收文件空间
 - 读取命中会更新 `last_used`
 
 ### search 如何写缓存

@@ -19,12 +19,18 @@ import (
 const (
 	// DefaultCacheTTL 是缓存条目的默认有效期。
 	DefaultCacheTTL = 30 * time.Minute
-	// DefaultCacheMaxBytes 是缓存文件的默认容量上限。
+	// DefaultCacheMaxBytes 是缓存活跃页大小的默认上限，不代表磁盘占用。
 	DefaultCacheMaxBytes int64 = 1 << 30
 	// cachePruneInterval 限制自动清理的最小间隔。
 	cachePruneInterval = time.Minute
-	// pruneDeleteBatch 限制单条 DELETE 语句绑定的参数数量，避免触发 SQLite 上限。
-	pruneDeleteBatch = 500
+	// 容量淘汰按批删除；每批提交后重新测量，未达标时把批量翻倍。
+	// 起始值保持较小，避免一次删掉过多条目。
+	pruneBatchStart = 16
+	pruneBatchMax   = 4096
+	// pruneMaxRounds 限制单次 Prune 的淘汰轮数，避免长期占用连接。
+	pruneMaxRounds = 32
+	// pruneTargetPercent 是容量淘汰的目标水位（maxBytes 的百分比）。
+	pruneTargetPercent = 95
 )
 
 // CacheOptions 是 SQLite 缓存的打开参数。
@@ -125,9 +131,14 @@ func (c *Cache) initSchema(ctx context.Context) error {
 			last_used      INTEGER NOT NULL DEFAULT 0,
 			size_bytes     INTEGER NOT NULL DEFAULT 0
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_web_cache_last_used ON web_cache(last_used)`,
+		// last_used 复合索引覆盖容量淘汰的 ORDER BY last_used, url。
+		// 使用新索引名而不是原地修改：CREATE INDEX IF NOT EXISTS 遇到同名旧索引会静默保留旧定义。
+		`CREATE INDEX IF NOT EXISTS idx_web_cache_last_used_url ON web_cache(last_used, url)`,
+		`DROP INDEX IF EXISTS idx_web_cache_last_used`,
+		// TTL 删除按 content_at 做范围扫描，保留该索引。
 		`CREATE INDEX IF NOT EXISTS idx_web_cache_content_at ON web_cache(content_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_web_cache_summary_at ON web_cache(summary_at)`,
+		// summary_at 的独立索引没有任何查询单独使用，属于冗余。
+		`DROP INDEX IF EXISTS idx_web_cache_summary_at`,
 	}
 	for _, stmt := range statements {
 		if _, err := c.db.ExecContext(ctx, stmt); err != nil {
@@ -463,7 +474,31 @@ func (c *Cache) maybePrune(ctx context.Context) {
 	}
 }
 
+// liveSize 返回缓存库的页级活跃大小（已用页减去 freelist 页）。
+// 它包含索引与页开销，比按业务字段累加更接近真实占用，但既不含 freelist 页，
+// 也不代表 cache.db 的磁盘占用。查询是 O(1) 的。
+//
+// 缓存使用单连接（SetMaxOpenConns(1)），任何未提交的事务都会一直占用它，
+// 因此 liveSize 不得在任何 *sql.Tx 未提交时调用，否则会永久阻塞。
+func (c *Cache) liveSize(ctx context.Context) (int64, error) {
+	if c == nil {
+		return 0, nil
+	}
+	var size int64
+	err := c.db.QueryRowContext(ctx, `
+		SELECT (page_count - freelist_count) * page_size
+		FROM pragma_page_count, pragma_freelist_count, pragma_page_size`).Scan(&size)
+	if err != nil {
+		return 0, err
+	}
+	return size, nil
+}
+
 // Prune 删除过期条目，并按容量淘汰最久未使用的条目。
+//
+// 容量按页级活跃大小判断，超过 maxBytes 时按 last_used 批量删除，直到降至目标水位。
+// 每批使用独立的隐式事务，提交后才重新测量；删除粒度是页，少量小行可能腾不出整页，
+// 因此连续无进展时会提前停止。Prune 不可并发调用，调用方需保证串行。
 func (c *Cache) Prune(ctx context.Context) error {
 	if c == nil {
 		return nil
@@ -474,64 +509,54 @@ func (c *Cache) Prune(ctx context.Context) error {
 		return err
 	}
 
-	var total int64
-	if err := c.db.QueryRowContext(ctx,
-		`SELECT COALESCE(SUM(size_bytes), 0) FROM web_cache`).Scan(&total); err != nil {
-		return err
-	}
-	if total <= c.maxBytes {
-		return nil
-	}
-
-	// 按最久未使用顺序收集刚好能腾出超额的条目，避免一次删掉过多。
-	rows, err := c.db.QueryContext(ctx,
-		`SELECT url, size_bytes FROM web_cache ORDER BY last_used ASC, url ASC`)
+	live, err := c.liveSize(ctx)
 	if err != nil {
 		return err
 	}
-	over := total - c.maxBytes
-	var (
-		freed   int64
-		victims []string
-	)
-	for rows.Next() && freed < over {
-		var (
-			url  string
-			size int64
-		)
-		if err := rows.Scan(&url, &size); err != nil {
-			_ = rows.Close()
-			return err
-		}
-		victims = append(victims, url)
-		freed += size
-	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return err
-	}
-	if err := rows.Close(); err != nil {
-		return err
-	}
-	if len(victims) == 0 {
+	if live <= c.maxBytes {
 		return nil
 	}
-	// 分批删除，避免单条 SQL 的绑定参数数量超过 SQLite 上限。
-	for start := 0; start < len(victims); start += pruneDeleteBatch {
-		end := start + pruneDeleteBatch
-		if end > len(victims) {
-			end = len(victims)
-		}
-		batch := victims[start:end]
-		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(batch)), ",")
-		args := make([]any, len(batch))
-		for i, url := range batch {
-			args[i] = url
-		}
-		if _, err := c.db.ExecContext(ctx,
-			`DELETE FROM web_cache WHERE url IN (`+placeholders+`)`, args...); err != nil {
+
+	target := c.maxBytes * pruneTargetPercent / 100
+	batch := int64(pruneBatchStart)
+	noProgress := 0
+	for round := 0; round < pruneMaxRounds && live > target; round++ {
+		res, err := c.db.ExecContext(ctx, `
+			DELETE FROM web_cache WHERE url IN (
+				SELECT url FROM web_cache ORDER BY last_used, url LIMIT ?)`, batch)
+		if err != nil {
 			return err
 		}
+		deleted, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if deleted == 0 {
+			break
+		}
+		next, err := c.liveSize(ctx)
+		if err != nil {
+			return err
+		}
+		if next >= live {
+			noProgress++
+		} else {
+			noProgress = 0
+		}
+		live = next
+		if noProgress >= 2 {
+			break
+		}
+		if batch < pruneBatchMax {
+			batch *= 2
+			if batch > pruneBatchMax {
+				batch = pruneBatchMax
+			}
+		}
+	}
+	if live > target && c.logger != nil {
+		c.logger.Warn("缓存淘汰未达到目标水位",
+			"live_bytes", live, "target_bytes", target, "max_bytes", c.maxBytes)
 	}
 	return nil
 }

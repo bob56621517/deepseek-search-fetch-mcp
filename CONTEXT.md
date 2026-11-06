@@ -15,7 +15,7 @@ _Avoid_: 检索、查询接口
 _Avoid_: 下载、爬取
 
 **缓存 (Cache)**:
-进程间共享的 SQLite 缓存,默认文件 `~/.deepseek_search_fetch/cache.db`(数据目录可用 `--data-dir`/`DEEPSEEK_SEARCH_FETCH_HOME` 覆盖)。以规范化 URL 为键,分别记录正文与摘要及各自时间戳;TTL 与容量可配置。缓存故障只记日志,不影响搜索与抓取主流程。
+进程间共享的 SQLite 缓存,默认文件 `~/.deepseek_search_fetch/cache.db`(数据目录可用 `--data-dir`/`DEEPSEEK_SEARCH_FETCH_HOME` 覆盖)。以规范化 URL 为键,分别记录正文与摘要及各自时间戳;TTL 与容量可配置,容量按页级活跃大小判断(不是磁盘占用)。缓存故障只记日志,不影响搜索与抓取主流程。
 _Avoid_: 存储、数据库
 
 **命令行 (CLI)**:

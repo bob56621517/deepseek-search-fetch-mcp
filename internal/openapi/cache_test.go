@@ -209,20 +209,24 @@ func TestCacheFlush(t *testing.T) {
 }
 
 func TestCacheEviction(t *testing.T) {
-	cache := newTestCache(t, time.Hour, 250)
+	// 页级容量以空库基线（约 24 KiB）为起点，用小阈值分别验证：
+	// 写入足够大的正文后触发淘汰，且最久未使用的条目先被删除。
+	const maxBytes = 384 << 10
+	cache := newTestCache(t, time.Hour, maxBytes)
 	clock := &fakeClock{now: time.Now()}
 	cache.clock = clock.Now
 	ctx := context.Background()
 
-	urls := []string{
-		"https://example.com/1",
-		"https://example.com/2",
-		"https://example.com/3",
+	const count = 32
+	body := strings.Repeat("x", 16<<10)
+	urls := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		urls = append(urls, fmt.Sprintf("https://example.com/%d", i))
 	}
 	for _, url := range urls {
 		clock.Advance(time.Second)
 		if err := cache.PutSearch(ctx, "q", []CachedPage{{
-			URL: url, Title: "t", Content: strings.Repeat("x", 120),
+			URL: url, Title: "t", Content: body,
 		}}); err != nil {
 			t.Fatal(err)
 		}
@@ -231,16 +235,18 @@ func TestCacheEviction(t *testing.T) {
 		t.Fatalf("清理失败: %v", err)
 	}
 
-	var total int64
-	if err := cache.db.QueryRowContext(ctx,
-		`SELECT COALESCE(SUM(size_bytes), 0) FROM web_cache`).Scan(&total); err != nil {
+	live, err := cache.liveSize(ctx)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if total > 250 {
-		t.Fatalf("清理后仍超出容量: %d", total)
+	if live > maxBytes {
+		t.Fatalf("清理后仍超出容量: live=%d max=%d", live, maxBytes)
 	}
 	if _, ok, _ := cache.GetContent(ctx, urls[0]); ok {
 		t.Fatal("最久未使用的条目应被淘汰")
+	}
+	if _, ok, _ := cache.GetContent(ctx, urls[count-1]); !ok {
+		t.Fatal("最新写入的条目不应被淘汰")
 	}
 }
 
@@ -294,15 +300,19 @@ func TestClearSummaryKeepsContent(t *testing.T) {
 }
 
 func TestPruneDeletesManyVictims(t *testing.T) {
-	cache := newTestCache(t, time.Hour, 100)
+	// 大缓存需要多轮淘汰：起始批量会逐轮翻倍，直到降至目标水位。
+	const maxBytes = 1 << 20
+	cache := newTestCache(t, time.Hour, maxBytes)
 	ctx := context.Background()
 
-	pages := make([]CachedPage, 0, 600)
-	for i := 0; i < 600; i++ {
+	const count = 200
+	body := strings.Repeat("x", 8<<10)
+	pages := make([]CachedPage, 0, count)
+	for i := 0; i < count; i++ {
 		pages = append(pages, CachedPage{
 			URL:     fmt.Sprintf("https://example.com/%d", i),
 			Title:   "t",
-			Content: "c",
+			Content: body,
 		})
 	}
 	if err := cache.PutSearch(ctx, "q", pages); err != nil {
@@ -311,13 +321,64 @@ func TestPruneDeletesManyVictims(t *testing.T) {
 	if err := cache.Prune(ctx); err != nil {
 		t.Fatalf("批量清理失败: %v", err)
 	}
-	var total int64
-	if err := cache.db.QueryRowContext(ctx,
-		`SELECT COALESCE(SUM(size_bytes), 0) FROM web_cache`).Scan(&total); err != nil {
+	live, err := cache.liveSize(ctx)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if total > 100 {
-		t.Fatalf("清理后仍超出容量: %d", total)
+	if live > maxBytes {
+		t.Fatalf("清理后仍超出容量: live=%d max=%d", live, maxBytes)
+	}
+	var remaining int
+	if err := cache.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM web_cache`).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining == 0 || remaining >= count {
+		t.Fatalf("批量淘汰应删除部分条目，剩余 %d/%d", remaining, count)
+	}
+}
+
+func TestLiveSizeBaseline(t *testing.T) {
+	cache := newTestCache(t, time.Minute, 1<<20)
+	live, err := cache.liveSize(context.Background())
+	if err != nil {
+		t.Fatalf("读取活跃大小失败: %v", err)
+	}
+	if live <= 0 {
+		t.Fatalf("空库的活跃大小应大于 0，实际 %d", live)
+	}
+}
+
+func TestPruneEmptyCacheTerminates(t *testing.T) {
+	// maxBytes 小于空库基线时会进入超限分支，但没有可删的行，必须正常退出。
+	cache := newTestCache(t, time.Minute, 1)
+	ctx := context.Background()
+	if err := cache.Prune(ctx); err != nil {
+		t.Fatalf("空表清理失败: %v", err)
+	}
+}
+
+func TestPruneDeletesExpiredEntries(t *testing.T) {
+	cache := newTestCache(t, 30*time.Minute, 1<<20)
+	clock := &fakeClock{now: time.Now()}
+	cache.clock = clock.Now
+	ctx := context.Background()
+
+	if err := cache.PutSearch(ctx, "q", []CachedPage{
+		{URL: "https://example.com/a", Title: "A", Content: "body", Summary: "summary"},
+		{URL: "https://example.com/b", Title: "B", Content: "body", Summary: "summary"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clock.Advance(31 * time.Minute)
+	if err := cache.Prune(ctx); err != nil {
+		t.Fatalf("清理失败: %v", err)
+	}
+	var remaining int
+	if err := cache.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM web_cache`).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 0 {
+		t.Fatalf("过期条目应被删除，剩余 %d 行", remaining)
 	}
 }
 
