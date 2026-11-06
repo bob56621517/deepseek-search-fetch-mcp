@@ -33,10 +33,11 @@ const (
 )
 
 type config struct {
-	apiKey string
-	apiURL string
-	host   string
-	port   int
+	apiKey  string
+	apiURL  string
+	host    string
+	port    int
+	dataDir string
 
 	requestTimeout          time.Duration
 	fetchTimeout            time.Duration
@@ -84,10 +85,11 @@ func loadConfig(args []string, stderr io.Writer) (config, error) {
 
 // flagValues 保存各子命令 FlagSet 解析出的值。
 type flagValues struct {
-	apiKey string
-	apiURL string
-	host   string
-	port   int
+	apiKey  string
+	apiURL  string
+	host    string
+	port    int
+	dataDir string
 }
 
 func newFlagSet(name string, stderr io.Writer) (*flag.FlagSet, *flagValues) {
@@ -96,6 +98,7 @@ func newFlagSet(name string, stderr io.Writer) (*flag.FlagSet, *flagValues) {
 	values := &flagValues{}
 	fs.StringVar(&values.apiKey, "deepseek-api-key", "", "DeepSeek API Key")
 	fs.StringVar(&values.apiURL, "deepseek-api-url", "", "DeepSeek API Base URL")
+	fs.StringVar(&values.dataDir, "data-dir", "", "数据目录（存放配置、日志与缓存）")
 	return fs, values
 }
 
@@ -118,7 +121,10 @@ func loadConfigFor(fs *flag.FlagSet, values *flagValues, requireKey bool) (confi
 	setByFlag := make(map[string]bool)
 	fs.Visit(func(f *flag.Flag) { setByFlag[f.Name] = true })
 
-	path, err := ensureConfigFile()
+	// 数据目录：启动参数 > 环境变量 > 默认 ~/.deepseek_search_fetch
+	cfg.dataDir = resolveDataDir(dataDirOverride(setByFlag, values))
+
+	path, err := ensureConfigFile(cfg.dataDir)
 	if err != nil {
 		return cfg, err
 	}
@@ -136,14 +142,14 @@ func loadConfigFor(fs *flag.FlagSet, values *flagValues, requireKey bool) (confi
 		}
 	}
 
-	if v, ok := os.LookupEnv("DEEPSEEK_API_KEY"); ok {
+	if v, ok := os.LookupEnv("DEEPSEEK_API_KEY"); ok && strings.TrimSpace(v) != "" {
 		cfg.apiKey = strings.TrimSpace(v)
 	}
-	if v, ok := os.LookupEnv("DEEPSEEK_API_URL"); ok {
+	if v, ok := os.LookupEnv("DEEPSEEK_API_URL"); ok && strings.TrimSpace(v) != "" {
 		cfg.apiURL = strings.TrimSpace(v)
 	}
-	if v, ok := os.LookupEnv("DEEPSEEK_SEARCH_FETCH_HOST"); ok {
-		cfg.host = v
+	if v, ok := os.LookupEnv("DEEPSEEK_SEARCH_FETCH_HOST"); ok && strings.TrimSpace(v) != "" {
+		cfg.host = strings.TrimSpace(v)
 	}
 	if v, ok := os.LookupEnv("DEEPSEEK_SEARCH_FETCH_PORT"); ok && strings.TrimSpace(v) != "" {
 		p, err := strconv.Atoi(strings.TrimSpace(v))
@@ -301,8 +307,7 @@ func validateConfig(cfg *config) error {
 
 // ensureConfigFile 创建配置目录；配置文件不存在时写入模板。
 // 无法确定用户主目录时跳过文件，仅使用环境变量或启动参数。
-func ensureConfigFile() (string, error) {
-	dir := dataDir()
+func ensureConfigFile(dir string) (string, error) {
 	if dir == "" {
 		return "", nil
 	}
@@ -355,7 +360,23 @@ func ensureConfigFile() (string, error) {
 	return path, nil
 }
 
-func dataDir() string {
+// dataDirOverride 返回显式指定的数据目录：启动参数优先于环境变量，均未指定时返回空。
+func dataDirOverride(setByFlag map[string]bool, values *flagValues) string {
+	if setByFlag["data-dir"] {
+		return strings.TrimSpace(values.dataDir)
+	}
+	if v, ok := os.LookupEnv("DEEPSEEK_SEARCH_FETCH_HOME"); ok {
+		return strings.TrimSpace(v)
+	}
+	return ""
+}
+
+// resolveDataDir 确定数据目录：显式指定优先，否则回退到用户主目录下的默认目录。
+// 无法确定主目录且无显式指定时返回空字符串。
+func resolveDataDir(explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""

@@ -102,6 +102,10 @@ docker run --rm -e DEEPSEEK_API_KEY=sk-... \
 
 The image is also published to GHCR: `ghcr.io/bob56621517/deepseek-search-fetch-mcp`.
 
+### Windows service
+
+To run as an auto-start Windows service, see [Windows service deployment](docs/deployment/windows-service.md).
+
 ### Install paths
 
 | Content | Path |
@@ -112,9 +116,11 @@ The image is also published to GHCR: `ghcr.io/bob56621517/deepseek-search-fetch-
 
 On Windows `~` maps to your user directory, e.g. `C:\Users\<name>`.
 
+The data directory defaults to `~/.deepseek_search_fetch` and can be overridden with `--data-dir` or the `DEEPSEEK_SEARCH_FETCH_HOME` environment variable (precedence: startup flag > environment variable > default). Config, cache, and logs always live in the same data directory.
+
 - On first start the directory and a config template are created automatically; the Key is empty.
 - Config is read once at process start; restart the service after changing it. CLI commands re-read it on every run.
-- If the user home directory cannot be determined, the program skips config file creation and uses only environment variables and startup flags; caching is unavailable in that case.
+- If the user home directory cannot be determined and no data directory is set, the program skips config file creation and uses only environment variables and startup flags; caching is unavailable in that case. When running under a non-interactive account such as a service or container, always set the data directory explicitly or make sure the home directory points to the user directory (see [Windows service deployment](docs/deployment/windows-service.md)).
 
 ### Logging
 
@@ -176,6 +182,7 @@ The config file is fixed at `~/.deepseek_search_fetch/config.json`:
 |---|---|
 | `DEEPSEEK_API_KEY` | `deepseek_api_key` |
 | `DEEPSEEK_API_URL` | `deepseek_api_url` |
+| `DEEPSEEK_SEARCH_FETCH_HOME` | Data directory (default `~/.deepseek_search_fetch`) |
 | `DEEPSEEK_SEARCH_FETCH_HOST` | `server_host` |
 | `DEEPSEEK_SEARCH_FETCH_PORT` | `server_port` |
 
@@ -192,6 +199,7 @@ deepseek-search-fetch-mcp search --deepseek-api-key sk-... "query"
 |---|---|---|
 | `--deepseek-api-key` | all | Override the API Key |
 | `--deepseek-api-url` | all | Override the base URL |
+| `--data-dir` | all | Data directory, overriding the default `~/.deepseek_search_fetch` |
 | `--host` | `server` | Listener address |
 | `--port` | `server` | Listener port |
 | `--count` | `search` | Number of results, default 10 |

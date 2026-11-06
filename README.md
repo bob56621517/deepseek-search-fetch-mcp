@@ -102,6 +102,10 @@ docker run --rm -e DEEPSEEK_API_KEY=sk-... \
 
 镜像同时发布到 GHCR：`ghcr.io/bob56621517/deepseek-search-fetch-mcp`。
 
+### Windows 服务
+
+以 Windows 服务方式开机自启，见 [Windows 服务部署](docs/deployment/windows-service.md)。
+
 ### 安装路径
 
 | 内容 | 路径 |
@@ -112,9 +116,11 @@ docker run --rm -e DEEPSEEK_API_KEY=sk-... \
 
 Windows 下 `~` 对应用户目录，例如 `C:\Users\<name>`。
 
+数据目录默认是 `~/.deepseek_search_fetch`，可用 `--data-dir` 或环境变量 `DEEPSEEK_SEARCH_FETCH_HOME` 覆盖（优先级：启动参数 > 环境变量 > 默认值）。配置、缓存、日志始终落在同一个数据目录下。
+
 - 首次启动时自动创建目录与配置文件模板；Key 为空。
 - 配置只在进程启动时读取一次，修改后需要重启服务。CLI 每次执行都会重新读取。
-- 如果无法确定用户主目录，程序会跳过配置文件创建，仅使用环境变量与启动参数；此时缓存不可用。
+- 如果无法确定用户主目录且未指定数据目录，程序会跳过配置文件创建，仅使用环境变量与启动参数；此时缓存不可用。以服务、容器等非交互账户运行时，务必显式指定数据目录或保证家目录指向用户目录（见 [Windows 服务部署](docs/deployment/windows-service.md)）。
 
 ### 日志
 
@@ -176,6 +182,7 @@ Windows 下 `~` 对应用户目录，例如 `C:\Users\<name>`。
 |---|---|
 | `DEEPSEEK_API_KEY` | `deepseek_api_key` |
 | `DEEPSEEK_API_URL` | `deepseek_api_url` |
+| `DEEPSEEK_SEARCH_FETCH_HOME` | 数据目录（默认 `~/.deepseek_search_fetch`） |
 | `DEEPSEEK_SEARCH_FETCH_HOST` | `server_host` |
 | `DEEPSEEK_SEARCH_FETCH_PORT` | `server_port` |
 
@@ -192,6 +199,7 @@ deepseek-search-fetch-mcp search --deepseek-api-key sk-... "query"
 |---|---|---|
 | `--deepseek-api-key` | 全部 | 覆盖 API Key |
 | `--deepseek-api-url` | 全部 | 覆盖 Base URL |
+| `--data-dir` | 全部 | 数据目录，覆盖默认 `~/.deepseek_search_fetch` |
 | `--host` | `server` | 监听地址 |
 | `--port` | `server` | 监听端口 |
 | `--count` | `search` | 返回条数，默认 10 |

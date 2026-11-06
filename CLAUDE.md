@@ -79,9 +79,10 @@ git merge origin/main
 
 首次启动时如果目录或文件不存在,会自动创建(Key 为空)。配置只在启动时读取一次,修改后需要重启。配置优先级:**启动参数 > 环境变量 > 配置文件 > 默认值**。
 
-- 启动参数:`--deepseek-api-key`、`--deepseek-api-url`、`--host`、`--port`
-- 环境变量:`DEEPSEEK_API_KEY`、`DEEPSEEK_API_URL`、`DEEPSEEK_SEARCH_FETCH_HOST`、`DEEPSEEK_SEARCH_FETCH_PORT`
+- 启动参数:`--deepseek-api-key`、`--deepseek-api-url`、`--data-dir`、`--host`、`--port`
+- 环境变量:`DEEPSEEK_API_KEY`、`DEEPSEEK_API_URL`、`DEEPSEEK_SEARCH_FETCH_HOME`、`DEEPSEEK_SEARCH_FETCH_HOST`、`DEEPSEEK_SEARCH_FETCH_PORT`
 - 配置文件:`deepseek_api_key`、`deepseek_api_url`、`server_host`、`server_port`、`request_timeout`、`fetch_timeout`、`cache_ttl`、`cache_max_bytes`、`http_max_idle_conns`、`http_max_idle_conns_per_host`、`http_idle_conn_timeout`、`http_tls_handshake_timeout`、`reset_connection_on_error`
+- 数据目录默认 `~/.deepseek_search_fetch`,可用 `--data-dir` 或 `DEEPSEEK_SEARCH_FETCH_HOME` 覆盖(优先级:启动参数 > 环境变量 > 默认);配置、缓存、日志三者落在同一目录;以服务/容器等非交互账户运行时必须显式指定
 - `fetch_timeout` 只作用于抓取请求(浏览器渲染更慢),搜索仍使用 `request_timeout`
 - `cache_ttl` 是缓存条目有效期,默认 `30m`;`cache_max_bytes` 是缓存容量上限,默认 `1073741824`(1 GiB)
 - 缓存文件:`~/.deepseek_search_fetch/cache.db`(SQLite,WAL 模式,权限 0600),可用 `flushall` 清空
@@ -111,7 +112,7 @@ git merge origin/main
 - `flushall`:清空 SQLite 缓存。
 - `--help`:查看顶层用法;各子命令也支持 `--help`。
 
-CLI 模式日志只写入日志文件,stdout 只输出 JSON;错误信息写 stderr。全局参数 `--deepseek-api-key`、`--deepseek-api-url` 写在子命令之后。
+CLI 模式日志只写入日志文件,stdout 只输出 JSON;错误信息写 stderr。全局参数 `--deepseek-api-key`、`--deepseek-api-url`、`--data-dir` 写在子命令之后。
 
 版本与构建渠道:
 

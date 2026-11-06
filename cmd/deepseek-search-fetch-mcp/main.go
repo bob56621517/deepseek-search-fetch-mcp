@@ -84,6 +84,7 @@ func printUsage(w io.Writer) {
 全局参数（写在命令之后）:
   --deepseek-api-key string   DeepSeek API Key
   --deepseek-api-url string   DeepSeek API Base URL
+  --data-dir string           数据目录（默认 ~/.deepseek_search_fetch）
 
 每个命令都支持 --help 查看细节。
 配置优先级：命令行 > 环境变量 > ~/.deepseek_search_fetch/config.json > 默认值。
@@ -110,7 +111,7 @@ func runServer(args []string) error {
 }
 
 func serve(cfg config) error {
-	logger, logCloser, err := newLogger(os.Stderr, slog.LevelInfo)
+	logger, logCloser, err := newLogger(os.Stderr, slog.LevelInfo, cfg.dataDir)
 	if err != nil {
 		return err
 	}
@@ -154,7 +155,14 @@ func serve(cfg config) error {
 		}
 	}()
 
-	logger.Info("服务启动", "addr", addr, "version", version, "build", buildChannel)
+	cfgPath := ""
+	cachePath := ""
+	if cfg.dataDir != "" {
+		cfgPath = filepath.Join(cfg.dataDir, configFileName)
+		cachePath = filepath.Join(cfg.dataDir, "cache.db")
+	}
+	logger.Info("服务启动", "addr", addr, "version", version, "build", buildChannel,
+		"config", cfgPath, "data_dir", cfg.dataDir, "cache", cachePath)
 	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
@@ -178,7 +186,7 @@ func runSearch(args []string) error {
 		return err
 	}
 
-	logger, logCloser := newCLILogger()
+	logger, logCloser := newCLILogger(cfg.dataDir)
 	defer logCloser.Close()
 	client := newAPIClient(cfg)
 	defer client.CloseIdleConnections()
@@ -216,7 +224,7 @@ func runFetch(args []string) error {
 		return err
 	}
 
-	logger, logCloser := newCLILogger()
+	logger, logCloser := newCLILogger(cfg.dataDir)
 	defer logCloser.Close()
 	client := newAPIClient(cfg)
 	defer client.CloseIdleConnections()
@@ -252,7 +260,7 @@ func runFlushAll(args []string) error {
 	if err != nil {
 		return err
 	}
-	logger, logCloser := newCLILogger()
+	logger, logCloser := newCLILogger(cfg.dataDir)
 	defer logCloser.Close()
 	cache, err := openCache(cfg, logger)
 	if err != nil {
@@ -278,9 +286,9 @@ func newAPIClient(cfg config) *openapi.Client {
 }
 
 func openCache(cfg config, logger *slog.Logger) (*openapi.Cache, error) {
-	dir := dataDir()
+	dir := cfg.dataDir
 	if dir == "" {
-		return nil, errors.New("无法确定用户主目录，缓存不可用")
+		return nil, errors.New("无法确定数据目录，缓存不可用")
 	}
 	return openapi.OpenCache(openapi.CacheOptions{
 		Path:     filepath.Join(dir, "cache.db"),
@@ -291,8 +299,8 @@ func openCache(cfg config, logger *slog.Logger) (*openapi.Cache, error) {
 }
 
 // newCLILogger 返回只写日志文件的 logger，保证 stdout 只输出 JSON。
-func newCLILogger() (*slog.Logger, io.Closer) {
-	logger, closer, err := newLogger(nil, slog.LevelInfo)
+func newCLILogger(dataDir string) (*slog.Logger, io.Closer) {
+	logger, closer, err := newLogger(nil, slog.LevelInfo, dataDir)
 	if err != nil {
 		return slog.New(slog.NewTextHandler(io.Discard, nil)), nopCloser{}
 	}

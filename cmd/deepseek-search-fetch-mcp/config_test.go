@@ -19,6 +19,7 @@ func isolateHome(t *testing.T) string {
 	unsetEnv(t, "DEEPSEEK_API_URL")
 	unsetEnv(t, "DEEPSEEK_SEARCH_FETCH_HOST")
 	unsetEnv(t, "DEEPSEEK_SEARCH_FETCH_PORT")
+	unsetEnv(t, "DEEPSEEK_SEARCH_FETCH_HOME")
 	return dir
 }
 
@@ -292,5 +293,92 @@ func TestInvalidAPIURL(t *testing.T) {
 	_, err := loadConfig([]string{"--deepseek-api-url=not-a-url"}, io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "API URL 不合法") {
 		t.Fatalf("API URL 非法时应报错: %v", err)
+	}
+}
+
+func TestEmptyEnvDoesNotOverrideFile(t *testing.T) {
+	home := isolateHome(t)
+	writeConfigFile(t, home, `{
+		"deepseek_api_key": "file-key",
+		"deepseek_api_url": "https://file.example.com",
+		"server_host": "0.0.0.0",
+		"server_port": 18090
+	}`)
+	t.Setenv("DEEPSEEK_API_KEY", "")
+	t.Setenv("DEEPSEEK_API_URL", "")
+	t.Setenv("DEEPSEEK_SEARCH_FETCH_HOST", "   ")
+	t.Setenv("DEEPSEEK_SEARCH_FETCH_PORT", "")
+
+	cfg, err := loadConfig(nil, io.Discard)
+	if err != nil {
+		t.Fatalf("加载失败: %v", err)
+	}
+	if cfg.apiKey != "file-key" || cfg.apiURL != "https://file.example.com" || cfg.host != "0.0.0.0" || cfg.port != 18090 {
+		t.Fatalf("空环境变量不应覆盖配置文件: %#v", cfg)
+	}
+}
+
+func TestDefaultDataDir(t *testing.T) {
+	home := isolateHome(t)
+	t.Setenv("DEEPSEEK_API_KEY", "env-key")
+
+	cfg, err := loadConfig(nil, io.Discard)
+	if err != nil {
+		t.Fatalf("加载失败: %v", err)
+	}
+	want := filepath.Join(home, dataDirName)
+	if cfg.dataDir != want {
+		t.Fatalf("默认数据目录应为 %q，实际 %q", want, cfg.dataDir)
+	}
+}
+
+func TestDataDirFlag(t *testing.T) {
+	isolateHome(t)
+	t.Setenv("DEEPSEEK_API_KEY", "env-key")
+	dir := t.TempDir()
+
+	cfg, err := loadConfig([]string{"--data-dir=" + dir}, io.Discard)
+	if err != nil {
+		t.Fatalf("加载失败: %v", err)
+	}
+	if cfg.dataDir != dir {
+		t.Fatalf("--data-dir 未生效: %q", cfg.dataDir)
+	}
+	if _, err := os.Stat(filepath.Join(dir, configFileName)); err != nil {
+		t.Fatalf("配置文件应落在 data-dir 下: %v", err)
+	}
+}
+
+func TestDataDirEnv(t *testing.T) {
+	isolateHome(t)
+	t.Setenv("DEEPSEEK_API_KEY", "env-key")
+	dir := t.TempDir()
+	t.Setenv("DEEPSEEK_SEARCH_FETCH_HOME", dir)
+
+	cfg, err := loadConfig(nil, io.Discard)
+	if err != nil {
+		t.Fatalf("加载失败: %v", err)
+	}
+	if cfg.dataDir != dir {
+		t.Fatalf("DEEPSEEK_SEARCH_FETCH_HOME 未生效: %q", cfg.dataDir)
+	}
+	if _, err := os.Stat(filepath.Join(dir, configFileName)); err != nil {
+		t.Fatalf("配置文件应落在 data-dir 下: %v", err)
+	}
+}
+
+func TestDataDirFlagOverridesEnv(t *testing.T) {
+	isolateHome(t)
+	t.Setenv("DEEPSEEK_API_KEY", "env-key")
+	envDir := t.TempDir()
+	flagDir := t.TempDir()
+	t.Setenv("DEEPSEEK_SEARCH_FETCH_HOME", envDir)
+
+	cfg, err := loadConfig([]string{"--data-dir=" + flagDir}, io.Discard)
+	if err != nil {
+		t.Fatalf("加载失败: %v", err)
+	}
+	if cfg.dataDir != flagDir {
+		t.Fatalf("--data-dir 应优先于环境变量: %q", cfg.dataDir)
 	}
 }
