@@ -792,6 +792,8 @@ CGO_ENABLED=1 go test -race ./...
 
 All tests use `httptest` fake upstreams and never touch the real network.
 
+> The project stays pure Go; builds and runtime do not require CGO. `-race` is an optional check that needs a C compiler on the local machine or CI.
+
 ## 9. License
 
 [MIT](LICENSE)

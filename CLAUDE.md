@@ -11,6 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 项目约定
 
 - Go 项目,module 为 `github.com/bob56621517/deepseek-search-fetch-mcp`。
+- 项目保持纯 Go,构建与运行不引入 CGO(`CGO_ENABLED=0`);`go test -race` 只是可选测试,需要时由本地或 CI 提供 C 编译器,不属于构建/运行依赖。
 - 同一可执行文件有两种形态:MCP server(`server` 子命令)与 CLI(`search` / `fetch` / `flushall` / `apikey`)。
 - MCP server 使用官方 Go SDK `github.com/modelcontextprotocol/go-sdk`,以 Streamable HTTP 形式暴露。
 - 只暴露 DeepSeek 官方的两个工具:`web_ext_search`、`web_ext_fetch`。访问密钥管理只通过 CLI `apikey` 提供,不暴露为 MCP 工具。
@@ -116,7 +117,7 @@ git merge origin/main
 - 静态检查:`go vet ./...`
 - 格式化检查:`gofmt -l .`
 - 单元/集成测试:`go test ./...`
-- 竞态检查(需要 CGO 与 C 编译器):`CGO_ENABLED=1 go test -race ./...`
+- 竞态检查(可选;`-race` 需要 C 编译器,项目本身仍保持 `CGO_ENABLED=0`):`CGO_ENABLED=1 go test -race ./...`
 - 构建镜像:`docker build -t deepseek-search-fetch-mcp .`
 
 ## 命令行

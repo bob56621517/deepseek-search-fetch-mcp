@@ -792,6 +792,8 @@ CGO_ENABLED=1 go test -race ./...
 
 测试全部使用 `httptest` 假上游，不访问真实网络。
 
+> 项目保持纯 Go，构建与运行不需要 CGO；`-race` 只是可选的竞态检查，需要本机或 CI 提供 C 编译器。
+
 ## 9. 许可证
 
 [MIT](LICENSE)
