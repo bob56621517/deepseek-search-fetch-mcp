@@ -4,10 +4,10 @@
 
 ## 背景：为什么需要显式数据目录
 
-程序的数据目录（配置、缓存、日志）默认是 `os.UserHomeDir()/.deepseek_search_fetch`。Windows 服务默认以 `LocalSystem` 账户运行，其「家目录」指向 `C:\Windows\system32\config\systemprofile`，与登录用户目录不同，会导致：
+程序的数据目录（配置、缓存、访问密钥、日志）默认是 `os.UserHomeDir()/.deepseek_search_fetch`。Windows 服务默认以 `LocalSystem` 账户运行，其「家目录」指向 `C:\Windows\system32\config\systemprofile`，与登录用户目录不同，会导致：
 
 - 读不到用户目录下已有的 `config.json`，启动直接因「未配置 DeepSeek API Key」失败；
-- 即使用环境变量补上 Key，缓存与日志也会落到 SYSTEM 私有目录，与 CLI 各用一份，排查时「明明搜过却不在缓存里」。
+- 即使用环境变量补上 Key，缓存、访问密钥与日志也会落到 SYSTEM 私有目录，与 CLI 各用一份，排查时「明明搜过却不在缓存里」。
 
 因此以服务方式运行时，必须用 `DEEPSEEK_SEARCH_FETCH_HOME` 或 `--data-dir` 显式指定数据目录。
 
@@ -49,6 +49,19 @@ nssm start $svc
 - `AppStdout` / `AppStderr`：让 NSSM 捕获进程标准输出/错误到文件，可选；程序自身日志已写入 `<data_dir>/logs/server.log`。
 - 路径或 Key 包含空格时，用引号包裹对应的 `KEY=VALUE` 整体。
 
+## 管理访问密钥
+
+`apikey` 命令和 Windows 服务必须使用同一个数据目录，否则服务看不到 CLI 写入的密钥。使用上面的示例时：
+
+```powershell
+$env:DEEPSEEK_SEARCH_FETCH_HOME = "D:\data\deepseek"
+deepseek-search-fetch-mcp apikey add laptop
+deepseek-search-fetch-mcp apikey list
+deepseek-search-fetch-mcp apikey remove laptop
+```
+
+密钥保存在 `D:\data\deepseek\auth.db`。没有密钥时 `/mcp` 不鉴权；添加至少一个密钥后立即强制校验。增删密钥不需要重启服务，也不需要 DeepSeek API Key。
+
 ## 默认语言与 LANG
 
 `default_lang: "auto"` 只读取 `LC_ALL`、`LC_MESSAGES`、`LANG` 环境变量，不读取 Windows 系统区域设置。NSSM 服务默认没有这些变量，`auto` 会解析为空并关闭自动语言补全。
@@ -65,7 +78,7 @@ sc query $svc        # 状态应为 RUNNING
 Invoke-WebRequest http://127.0.0.1:18081/health   # 应返回 200
 ```
 
-启动后应能看到 `D:\data\deepseek\config.json`、`D:\data\deepseek\cache.db`、`D:\data\deepseek\logs\server.log` 出现在同一目录。也可以做一次完整 MCP 会话验证：`tools/list` 返回 `web_ext_search` / `web_ext_fetch`，`tools/call web_ext_search` 能真实返回上游结果（证明 API Key 确实来自数据目录下的配置文件）。
+启动后应能看到 `D:\data\deepseek\config.json`、`D:\data\deepseek\cache.db`、`D:\data\deepseek\auth.db`、`D:\data\deepseek\logs\server.log` 出现在同一目录。也可以做一次完整 MCP 会话验证：`tools/list` 返回 `web_ext_search` / `web_ext_fetch`，`tools/call web_ext_search` 能真实返回上游结果（证明 API Key 确实来自数据目录下的配置文件）。
 
 ## 升级
 

@@ -20,6 +20,7 @@ const (
 	defaultAPIURL  = "https://api.deepseek.com"
 	dataDirName    = ".deepseek_search_fetch"
 	configFileName = "config.json"
+	authDBFileName = "auth.db"
 
 	defaultRequestTimeout                = 30 * time.Second
 	defaultFetchTimeout                  = 60 * time.Second
@@ -30,6 +31,14 @@ const (
 	defaultHTTPIdleConnTimeout           = 90 * time.Second
 	defaultHTTPTLSHandshakeTimeout       = 10 * time.Second
 	defaultResetConnectionOnError        = true
+
+	defaultRateLimitRPS     = 10.0
+	defaultRateLimitBurst   = 20
+	defaultAuthFailLimit    = 10
+	defaultAuthFailWindow   = time.Minute
+	defaultAuthFailBlock    = 5 * time.Minute
+	defaultIPRateLimitRPS   = 0.0
+	defaultIPRateLimitBurst = 0
 )
 
 type config struct {
@@ -44,6 +53,14 @@ type config struct {
 	cacheTTL                time.Duration
 	cacheMaxBytes           int64
 	defaultLang             string
+	rateLimitRPS            float64
+	rateLimitBurst          int
+	authFailLimit           int
+	authFailWindow          time.Duration
+	authFailBlock           time.Duration
+	ipRateLimitRPS          float64
+	ipRateLimitBurst        int
+	trustedProxies          []string
 	httpMaxIdleConns        int
 	httpMaxIdleConnsPerHost int
 	httpIdleConnTimeout     time.Duration
@@ -52,20 +69,28 @@ type config struct {
 }
 
 type fileConfig struct {
-	DeepSeekAPIKey          *string `json:"deepseek_api_key"`
-	DeepSeekAPIURL          *string `json:"deepseek_api_url"`
-	ServerHost              *string `json:"server_host"`
-	ServerPort              *int    `json:"server_port"`
-	RequestTimeout          *string `json:"request_timeout"`
-	FetchTimeout            *string `json:"fetch_timeout"`
-	CacheTTL                *string `json:"cache_ttl"`
-	CacheMaxBytes           *int64  `json:"cache_max_bytes"`
-	DefaultLang             *string `json:"default_lang"`
-	HTTPMaxIdleConns        *int    `json:"http_max_idle_conns"`
-	HTTPMaxIdleConnsPerHost *int    `json:"http_max_idle_conns_per_host"`
-	HTTPIdleConnTimeout     *string `json:"http_idle_conn_timeout"`
-	HTTPTLSHandshakeTimeout *string `json:"http_tls_handshake_timeout"`
-	ResetConnectionOnError  *bool   `json:"reset_connection_on_error"`
+	DeepSeekAPIKey          *string   `json:"deepseek_api_key"`
+	DeepSeekAPIURL          *string   `json:"deepseek_api_url"`
+	ServerHost              *string   `json:"server_host"`
+	ServerPort              *int      `json:"server_port"`
+	RequestTimeout          *string   `json:"request_timeout"`
+	FetchTimeout            *string   `json:"fetch_timeout"`
+	CacheTTL                *string   `json:"cache_ttl"`
+	CacheMaxBytes           *int64    `json:"cache_max_bytes"`
+	DefaultLang             *string   `json:"default_lang"`
+	RateLimitRPS            *float64  `json:"rate_limit_rps"`
+	RateLimitBurst          *int      `json:"rate_limit_burst"`
+	AuthFailLimit           *int      `json:"auth_fail_limit"`
+	AuthFailWindow          *string   `json:"auth_fail_window"`
+	AuthFailBlock           *string   `json:"auth_fail_block"`
+	IPRateLimitRPS          *float64  `json:"ip_rate_limit_rps"`
+	IPRateLimitBurst        *int      `json:"ip_rate_limit_burst"`
+	TrustedProxies          *[]string `json:"trusted_proxies"`
+	HTTPMaxIdleConns        *int      `json:"http_max_idle_conns"`
+	HTTPMaxIdleConnsPerHost *int      `json:"http_max_idle_conns_per_host"`
+	HTTPIdleConnTimeout     *string   `json:"http_idle_conn_timeout"`
+	HTTPTLSHandshakeTimeout *string   `json:"http_tls_handshake_timeout"`
+	ResetConnectionOnError  *bool     `json:"reset_connection_on_error"`
 }
 
 // loadConfig 按优先级读取配置：启动参数 > 环境变量 > 固定配置文件 > 默认值。
@@ -100,7 +125,7 @@ func newFlagSet(name string, stderr io.Writer) (*flag.FlagSet, *flagValues) {
 	values := &flagValues{}
 	fs.StringVar(&values.apiKey, "deepseek-api-key", "", "DeepSeek API Key")
 	fs.StringVar(&values.apiURL, "deepseek-api-url", "", "DeepSeek API Base URL")
-	fs.StringVar(&values.dataDir, "data-dir", "", "数据目录（存放配置、日志与缓存）")
+	fs.StringVar(&values.dataDir, "data-dir", "", "数据目录（存放配置、日志、缓存与访问密钥）")
 	return fs, values
 }
 
@@ -114,6 +139,13 @@ func loadConfigFor(fs *flag.FlagSet, values *flagValues, requireKey bool) (confi
 		fetchTimeout:            defaultFetchTimeout,
 		cacheTTL:                defaultCacheTTL,
 		cacheMaxBytes:           defaultCacheMaxBytes,
+		rateLimitRPS:            defaultRateLimitRPS,
+		rateLimitBurst:          defaultRateLimitBurst,
+		authFailLimit:           defaultAuthFailLimit,
+		authFailWindow:          defaultAuthFailWindow,
+		authFailBlock:           defaultAuthFailBlock,
+		ipRateLimitRPS:          defaultIPRateLimitRPS,
+		ipRateLimitBurst:        defaultIPRateLimitBurst,
 		httpMaxIdleConns:        defaultHTTPMaxIdleConns,
 		httpMaxIdleConnsPerHost: defaultHTTPMaxIdleConnsPerHost,
 		httpIdleConnTimeout:     defaultHTTPIdleConnTimeout,
@@ -230,6 +262,44 @@ func applyFileConfig(cfg *config, file fileConfig) error {
 	if file.DefaultLang != nil {
 		cfg.defaultLang = strings.TrimSpace(*file.DefaultLang)
 	}
+	if file.RateLimitRPS != nil {
+		cfg.rateLimitRPS = *file.RateLimitRPS
+	}
+	if file.RateLimitBurst != nil {
+		cfg.rateLimitBurst = *file.RateLimitBurst
+	}
+	if file.AuthFailLimit != nil {
+		cfg.authFailLimit = *file.AuthFailLimit
+	}
+	if file.AuthFailWindow != nil {
+		d, err := parseDuration("auth_fail_window", *file.AuthFailWindow)
+		if err != nil {
+			return err
+		}
+		cfg.authFailWindow = d
+	}
+	if file.AuthFailBlock != nil {
+		d, err := parseDuration("auth_fail_block", *file.AuthFailBlock)
+		if err != nil {
+			return err
+		}
+		cfg.authFailBlock = d
+	}
+	if file.IPRateLimitRPS != nil {
+		cfg.ipRateLimitRPS = *file.IPRateLimitRPS
+	}
+	if file.IPRateLimitBurst != nil {
+		cfg.ipRateLimitBurst = *file.IPRateLimitBurst
+	}
+	if file.TrustedProxies != nil {
+		cfg.trustedProxies = make([]string, 0, len(*file.TrustedProxies))
+		for _, item := range *file.TrustedProxies {
+			item = strings.TrimSpace(item)
+			if item != "" {
+				cfg.trustedProxies = append(cfg.trustedProxies, item)
+			}
+		}
+	}
 	if file.HTTPMaxIdleConns != nil {
 		cfg.httpMaxIdleConns = *file.HTTPMaxIdleConns
 	}
@@ -309,6 +379,29 @@ func validateConfig(cfg *config) error {
 		}
 		cfg.defaultLang = code
 	}
+	if cfg.rateLimitRPS < 0 {
+		return fmt.Errorf("rate_limit_rps 不能小于 0，当前为 %g", cfg.rateLimitRPS)
+	}
+	if cfg.rateLimitRPS > 0 && cfg.rateLimitBurst < 1 {
+		return fmt.Errorf("rate_limit_burst 必须大于等于 1，当前为 %d", cfg.rateLimitBurst)
+	}
+	if cfg.authFailLimit < 0 {
+		return fmt.Errorf("auth_fail_limit 不能小于 0，当前为 %d", cfg.authFailLimit)
+	}
+	if cfg.authFailLimit > 0 {
+		if cfg.authFailWindow <= 0 {
+			return fmt.Errorf("auth_fail_window 必须大于 0，当前为 %s", cfg.authFailWindow)
+		}
+		if cfg.authFailBlock <= 0 {
+			return fmt.Errorf("auth_fail_block 必须大于 0，当前为 %s", cfg.authFailBlock)
+		}
+	}
+	if cfg.ipRateLimitRPS < 0 {
+		return fmt.Errorf("ip_rate_limit_rps 不能小于 0，当前为 %g", cfg.ipRateLimitRPS)
+	}
+	if cfg.ipRateLimitRPS > 0 && cfg.ipRateLimitBurst < 1 {
+		return fmt.Errorf("ip_rate_limit_burst 必须大于等于 1，当前为 %d", cfg.ipRateLimitBurst)
+	}
 	if cfg.httpMaxIdleConns < 1 {
 		return fmt.Errorf("http_max_idle_conns 必须大于等于 1，当前为 %d", cfg.httpMaxIdleConns)
 	}
@@ -342,20 +435,28 @@ func ensureConfigFile(dir string) (string, error) {
 	}
 
 	content, err := json.MarshalIndent(struct {
-		DeepSeekAPIKey          string `json:"deepseek_api_key"`
-		DeepSeekAPIURL          string `json:"deepseek_api_url"`
-		ServerHost              string `json:"server_host"`
-		ServerPort              int    `json:"server_port"`
-		RequestTimeout          string `json:"request_timeout"`
-		FetchTimeout            string `json:"fetch_timeout"`
-		CacheTTL                string `json:"cache_ttl"`
-		CacheMaxBytes           int64  `json:"cache_max_bytes"`
-		DefaultLang             string `json:"default_lang"`
-		HTTPMaxIdleConns        int    `json:"http_max_idle_conns"`
-		HTTPMaxIdleConnsPerHost int    `json:"http_max_idle_conns_per_host"`
-		HTTPIdleConnTimeout     string `json:"http_idle_conn_timeout"`
-		HTTPTLSHandshakeTimeout string `json:"http_tls_handshake_timeout"`
-		ResetConnectionOnError  bool   `json:"reset_connection_on_error"`
+		DeepSeekAPIKey          string   `json:"deepseek_api_key"`
+		DeepSeekAPIURL          string   `json:"deepseek_api_url"`
+		ServerHost              string   `json:"server_host"`
+		ServerPort              int      `json:"server_port"`
+		RequestTimeout          string   `json:"request_timeout"`
+		FetchTimeout            string   `json:"fetch_timeout"`
+		CacheTTL                string   `json:"cache_ttl"`
+		CacheMaxBytes           int64    `json:"cache_max_bytes"`
+		DefaultLang             string   `json:"default_lang"`
+		RateLimitRPS            float64  `json:"rate_limit_rps"`
+		RateLimitBurst          int      `json:"rate_limit_burst"`
+		AuthFailLimit           int      `json:"auth_fail_limit"`
+		AuthFailWindow          string   `json:"auth_fail_window"`
+		AuthFailBlock           string   `json:"auth_fail_block"`
+		IPRateLimitRPS          float64  `json:"ip_rate_limit_rps"`
+		IPRateLimitBurst        int      `json:"ip_rate_limit_burst"`
+		TrustedProxies          []string `json:"trusted_proxies"`
+		HTTPMaxIdleConns        int      `json:"http_max_idle_conns"`
+		HTTPMaxIdleConnsPerHost int      `json:"http_max_idle_conns_per_host"`
+		HTTPIdleConnTimeout     string   `json:"http_idle_conn_timeout"`
+		HTTPTLSHandshakeTimeout string   `json:"http_tls_handshake_timeout"`
+		ResetConnectionOnError  bool     `json:"reset_connection_on_error"`
 	}{
 		DeepSeekAPIKey:          "",
 		DeepSeekAPIURL:          defaultAPIURL,
@@ -366,6 +467,14 @@ func ensureConfigFile(dir string) (string, error) {
 		CacheTTL:                durationText(defaultCacheTTL),
 		CacheMaxBytes:           defaultCacheMaxBytes,
 		DefaultLang:             "",
+		RateLimitRPS:            defaultRateLimitRPS,
+		RateLimitBurst:          defaultRateLimitBurst,
+		AuthFailLimit:           defaultAuthFailLimit,
+		AuthFailWindow:          durationText(defaultAuthFailWindow),
+		AuthFailBlock:           durationText(defaultAuthFailBlock),
+		IPRateLimitRPS:          defaultIPRateLimitRPS,
+		IPRateLimitBurst:        defaultIPRateLimitBurst,
+		TrustedProxies:          []string{},
 		HTTPMaxIdleConns:        defaultHTTPMaxIdleConns,
 		HTTPMaxIdleConnsPerHost: defaultHTTPMaxIdleConnsPerHost,
 		HTTPIdleConnTimeout:     durationText(defaultHTTPIdleConnTimeout),

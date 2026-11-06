@@ -90,7 +90,7 @@ docker run -d --name deepseek-search-fetch-mcp \
   deepseek-search-fetch-mcp
 ```
 
-- 容器内 `HOME=/data`，配置、日志、缓存都会落在 `/data/.deepseek_search_fetch`。
+- 容器内 `HOME=/data`，配置、日志、缓存、访问密钥都会落在 `/data/.deepseek_search_fetch`。
 - 不挂载具名卷时，Docker 会使用匿名卷；容器重建后数据不便复用，建议始终挂载 `/data`。
 - 容器默认执行 `server`；如需在容器内执行 CLI，覆盖命令即可：
 
@@ -98,6 +98,13 @@ docker run -d --name deepseek-search-fetch-mcp \
 docker run --rm -e DEEPSEEK_API_KEY=sk-... \
   -v deepseek-sf-data:/data \
   deepseek-search-fetch-mcp search "DeepSeek V4"
+```
+
+在容器数据目录里管理访问密钥（不需要 DeepSeek API Key）：
+
+```bash
+docker run --rm -v deepseek-sf-data:/data \
+  deepseek-search-fetch-mcp apikey add laptop
 ```
 
 镜像同时发布到 GHCR：`ghcr.io/bob56621517/deepseek-search-fetch-mcp`。
@@ -113,18 +120,20 @@ docker run --rm -e DEEPSEEK_API_KEY=sk-... \
 | 配置 | `~/.deepseek_search_fetch/config.json` |
 | 日志 | `~/.deepseek_search_fetch/logs/server.log` |
 | 缓存 | `~/.deepseek_search_fetch/cache.db`（同目录可能出现 `-wal`、`-shm`） |
+| 访问密钥库 | `~/.deepseek_search_fetch/auth.db`（只保存哈希与首尾片段，同目录可能出现 `-wal`、`-shm`） |
 
 Windows 下 `~` 对应用户目录，例如 `C:\Users\<name>`。
 
-数据目录默认是 `~/.deepseek_search_fetch`，可用 `--data-dir` 或环境变量 `DEEPSEEK_SEARCH_FETCH_HOME` 覆盖（优先级：启动参数 > 环境变量 > 默认值）。配置、缓存、日志始终落在同一个数据目录下。
+数据目录默认是 `~/.deepseek_search_fetch`，可用 `--data-dir` 或环境变量 `DEEPSEEK_SEARCH_FETCH_HOME` 覆盖（优先级：启动参数 > 环境变量 > 默认值）。配置、缓存、访问密钥、日志始终落在同一个数据目录下。
 
 - 首次启动时自动创建目录与配置文件模板；Key 为空。
-- 配置只在进程启动时读取一次，修改后需要重启服务。CLI 每次执行都会重新读取。
-- 如果无法确定用户主目录且未指定数据目录，程序会跳过配置文件创建，仅使用环境变量与启动参数；此时缓存不可用。以服务、容器等非交互账户运行时，务必显式指定数据目录或保证家目录指向用户目录（见 [Windows 服务部署](docs/deployment/windows-service.md)）。
+- 配置只在进程启动时读取一次，修改后需要重启服务。CLI 每次执行都会重新读取。访问密钥通过 `apikey` 命令管理，增删立即生效，不需要重启。
+- 如果无法确定用户主目录且未指定数据目录，程序会跳过配置文件创建，仅使用环境变量与启动参数；此时缓存不可用，访问密钥库也无法打开，`server` 会启动失败。以服务、容器等非交互账户运行时，务必显式指定数据目录或保证家目录指向用户目录（见 [Windows 服务部署](docs/deployment/windows-service.md)）。
 
 ### 日志
 
 - 服务日志文件：`~/.deepseek_search_fetch/logs/server.log`
+- 鉴权/限流拒绝事件也会写入该文件，包含 `event`、`remote`、`status`、`reason` 等字段，供 fail2ban 使用；不记录任何密钥
 - 滚动策略：单文件 10 MiB，最多保留 5 个文件（当前 `server.log` + 4 个备份），备份名为 `server-<时间戳>.log`
 - `server` 模式：日志同时输出到 stderr 与文件
 - CLI 模式：日志**只写入文件**，stdout 只输出 JSON
@@ -147,6 +156,14 @@ Windows 下 `~` 对应用户目录，例如 `C:\Users\<name>`。
   "cache_ttl": "30m",
   "cache_max_bytes": 1073741824,
   "default_lang": "",
+  "rate_limit_rps": 10,
+  "rate_limit_burst": 20,
+  "auth_fail_limit": 10,
+  "auth_fail_window": "1m",
+  "auth_fail_block": "5m",
+  "ip_rate_limit_rps": 0,
+  "ip_rate_limit_burst": 0,
+  "trusted_proxies": [],
   "http_max_idle_conns": 5,
   "http_max_idle_conns_per_host": 5,
   "http_idle_conn_timeout": "90s",
@@ -163,7 +180,7 @@ Windows 下 `~` 对应用户目录，例如 `C:\Users\<name>`。
 
 | 配置项 | 默认值 | 说明 |
 |---|---|---|
-| `deepseek_api_key` | 空 | DeepSeek API Key；`server`、`search`、`fetch` 必需，`flushall` 不需要 |
+| `deepseek_api_key` | 空 | DeepSeek API Key；`server`、`search`、`fetch` 必需，`flushall`、`apikey` 不需要 |
 | `deepseek_api_url` | `https://api.deepseek.com` | 上游 Base URL |
 | `server_host` | `127.0.0.1` | `server` 模式监听地址 |
 | `server_port` | `18081` | `server` 模式监听端口 |
@@ -172,11 +189,21 @@ Windows 下 `~` 对应用户目录，例如 `C:\Users\<name>`。
 | `cache_ttl` | `30m` | 缓存条目有效期，正文与摘要分别计算 |
 | `cache_max_bytes` | `1073741824`（1 GiB） | 页级活跃大小上限，最小 1 MiB，不代表磁盘占用 |
 | `default_lang` | 空 | 默认语言补全：空为关闭，`auto` 读取 `LC_ALL`/`LC_MESSAGES`/`LANG`，也可写两位语言码（如 `zh`）；写 `zh-CN` 会报错 |
+| `rate_limit_rps` | `10` | 每个访问密钥的令牌桶速率；`0` 关闭每 key 限流 |
+| `rate_limit_burst` | `20` | 每个访问密钥的突发容量；开启限流时必须大于等于 1 |
+| `auth_fail_limit` | `10` | 同一 IP 在窗口内允许的鉴权失败次数；`0` 关闭失败封禁 |
+| `auth_fail_window` | `1m` | 鉴权失败计数窗口 |
+| `auth_fail_block` | `5m` | 达到失败阈值后的封禁时长 |
+| `ip_rate_limit_rps` | `0` | 每个客户端 IP 的全量请求速率；`0` 关闭 |
+| `ip_rate_limit_burst` | `0` | 每个客户端 IP 的突发容量；开启 IP 限流时必须大于等于 1 |
+| `trusted_proxies` | `[]` | 可信代理 CIDR 列表；只填反向代理自身地址，不要填客户端网段 |
 | `http_max_idle_conns` | `5` | 全局最大空闲连接数 |
 | `http_max_idle_conns_per_host` | `5` | 单主机最大空闲连接数 |
 | `http_idle_conn_timeout` | `90s` | 空闲连接超时 |
 | `http_tls_handshake_timeout` | `10s` | TLS 握手超时 |
 | `reset_connection_on_error` | `true` | 任意上游调用失败后丢弃空闲连接，下次重新建连 |
+
+> 鉴权与限流参数（`rate_limit_*`、`auth_fail_*`、`ip_rate_limit_*`、`trusted_proxies`）目前只从配置文件读取，作用于 `server` 模式；不提供环境变量或命令行参数。访问密钥本身不在配置文件中，使用 `apikey` 命令管理。
 
 ### 环境变量
 
@@ -221,6 +248,9 @@ deepseek-search-fetch-mcp server   [--host 127.0.0.1] [--port 18081]
 deepseek-search-fetch-mcp search   [--count 10] [--content] <query>
 deepseek-search-fetch-mcp fetch    [--summary] [--refresh] <url>
 deepseek-search-fetch-mcp flushall
+deepseek-search-fetch-mcp apikey   add <name>
+deepseek-search-fetch-mcp apikey   list
+deepseek-search-fetch-mcp apikey   remove <name>
 deepseek-search-fetch-mcp --help
 ```
 
@@ -367,6 +397,54 @@ deepseek-search-fetch-mcp flushall
 
 服务运行期间执行时，`VACUUM` 可能等待 SQLite 写锁；如遇 `database is locked`，稍后重试即可。
 
+### `apikey`
+
+管理 MCP 客户端的访问密钥。访问密钥与上游 `deepseek_api_key` 无关，只保护 `/mcp` 入口；这些命令不需要 DeepSeek API Key。
+
+```bash
+deepseek-search-fetch-mcp apikey add laptop
+deepseek-search-fetch-mcp apikey list
+deepseek-search-fetch-mcp apikey remove laptop
+```
+
+`apikey add <name>` 生成一条新密钥，完整值只显示一次：
+
+```json
+{
+  "name": "laptop",
+  "api_key": "dsf_...",
+  "masked": "dsf_Ab12Cd34…x9Yz",
+  "created_at": "2026-11-06T10:00:00Z",
+  "auth": "enforced",
+  "warning": "访问密钥只显示一次，请立即保存"
+}
+```
+
+`apikey list` 只返回首尾脱敏结果，不返回明文或哈希：
+
+```json
+{
+  "auth": "enforced",
+  "keys": [
+    {
+      "name": "laptop",
+      "masked": "dsf_Ab12Cd34…x9Yz",
+      "created_at": "2026-11-06T10:00:00Z",
+      "last_used_at": "2026-11-06T10:05:00Z"
+    }
+  ]
+}
+```
+
+`apikey remove <name>` 硬删除密钥；删除最后一个密钥后，`auth` 变为 `disabled` 并给出警告，`/mcp` 立即回到不校验模式。
+
+- 密钥库为数据目录下的 `auth.db`，只保存 SHA-256 哈希与首尾片段，不保存明文。
+- `auth.db` 与 `cache.db` 分离；`flushall` 不会清空访问密钥。
+- 服务与 CLI 必须使用同一个数据目录，否则 `apikey add` 写入的密钥服务看不到。
+- `--data-dir` 等全局参数要写在 `apikey add/remove` 之后、`<name>` 之前，例如 `apikey add --data-dir D:\data\deepseek laptop`；也可以设置 `DEEPSEEK_SEARCH_FETCH_HOME`。
+- 密钥只支持生成，不支持导入；丢失后执行 `remove` + `add` 轮换。
+- 本期所有密钥等价，没有只读/读写或过期区分。
+
 ### 退出码与输出
 
 - 成功退出码 `0`，失败退出码 `1`
@@ -396,6 +474,31 @@ MCP（Model Context Protocol）用于把外部工具暴露给支持该协议的 
 
 默认地址：`http://127.0.0.1:18081/mcp`
 
+### 访问密钥、鉴权与限流
+
+- 没有访问密钥时，`/mcp` 不校验身份，静默提供服务；适合默认的 `127.0.0.1` 本机场景。
+- 只要 `auth.db` 中存在至少一个密钥，`/mcp` 立即进入强校验模式；不需要重启服务。
+- 客户端用 `Authorization: Bearer <key>` 或 `X-API-Key: <key>` 传递密钥；两者同时存在且不一致会被拒绝。
+- `/health`、`/healthz` 永远豁免鉴权。
+- 鉴权库不可用时返回 503，不会 fail-open。
+
+| 场景 | 状态码 | 说明 |
+|---|---|---|
+| 缺少/无效/冲突凭据 | 401 | 带 `WWW-Authenticate: Bearer` |
+| 每 key 限流或同 IP 失败次数超限 | 429 | 带 `Retry-After` |
+| 鉴权库不可用 | 503 | 不参与 fail2ban 封禁 |
+
+限流默认值：
+
+- 每个访问密钥 10 rps，burst 20；`rate_limit_rps=0` 关闭。
+- 同一 IP 在 1 分钟内鉴权失败 10 次后封禁 5 分钟；成功一次清零。
+- 每 IP 全量请求限流默认关闭，公网部署可通过 `ip_rate_limit_rps` 开启。
+- 限流是单进程内存态；多副本部署时每个副本独立计数。
+
+fail2ban 可读取 `server.log` 中的 `event=auth_fail`（401）与 `event=auth_blocked`（429）事件。不要按所有 429 封禁，否则会误伤合法客户端的限流。完整 filter/jail 示例见 [fail2ban 部署](docs/deployment/fail2ban.md)。
+
+> 访问密钥只解决身份校验，不提供传输加密。公网部署必须放在 TLS 反代后面。
+
 ### 客户端配置示例
 
 先启动服务：
@@ -411,13 +514,16 @@ deepseek-search-fetch-mcp server
   "mcpServers": {
     "deepseek-search-fetch": {
       "type": "http",
-      "url": "http://127.0.0.1:18081/mcp"
+      "url": "http://127.0.0.1:18081/mcp",
+      "headers": {
+        "Authorization": "Bearer dsf_..."
+      }
     }
   }
 }
 ```
 
-不同客户端的配置字段可能略有差异，以客户端文档为准。
+没有配置访问密钥时可以省略 `headers`。不同客户端的配置字段可能略有差异，以客户端文档为准。
 
 ### 工具一：`web_ext_search`
 
@@ -530,6 +636,7 @@ deepseek-search-fetch-mcp server
 ### 存储
 
 - 文件：`~/.deepseek_search_fetch/cache.db`
+- 访问密钥库是独立的 `auth.db`，不属于缓存；`flushall` 不会清空它
 - 引擎：SQLite，WAL 模式，`busy_timeout=5000`，`synchronous=NORMAL`
 - 每个进程使用单连接串行访问
 - 多个进程/会话使用同一文件时由 SQLite 处理并发
@@ -644,8 +751,11 @@ web_ext_fetch(summary=true, refresh=true)
 
 | 现象 | 处理 |
 |---|---|
-| `必须指定命令：server、search、fetch 或 flushall` | 加上子命令，例如 `server` |
+| `必须指定命令：server、search、fetch、flushall 或 apikey` | 加上子命令，例如 `server` |
 | `未配置 DeepSeek API Key` | 设置 `DEEPSEEK_API_KEY`、`--deepseek-api-key` 或写入配置文件 |
+| `打开访问密钥库失败` | 检查数据目录与 `auth.db` 写权限；鉴权库不可用时服务会直接启动失败，不会降级 |
+| MCP 返回 401 | 服务已存在访问密钥，但客户端未带或带错凭据；用 `apikey list` 查看名称，在客户端配置 `Authorization: Bearer <key>` |
+| MCP 返回 429 | 触发每 key 限流或同 IP 失败封禁；按 `Retry-After` 等待，或调整 `rate_limit_*` / `auth_fail_*` |
 | 日志出现 `缓存不可用` | 检查用户主目录与写权限；服务会降级为无缓存模式 |
 | `fetch` 超时 | 上游浏览器渲染可能较慢；`fetch_timeout` 默认 60s，上游自身也可能返回 504 |
 | 搜索结果很长 | 搜索只返回 `snippet`；需要摘要用 `fetch(summary=true)`，需要正文用 `fetch`（CLI 返回全文，MCP 按 `offset`/`limit` 分页） |
@@ -654,8 +764,11 @@ web_ext_fetch(summary=true, refresh=true)
 
 安全建议：
 
-- MCP 端点没有鉴权，默认只监听 `127.0.0.1`，不要直接暴露到公网
-- API Key 只放在环境变量或配置文件中，不要提交到仓库
+- 默认没有访问密钥时 `/mcp` 不鉴权；需要对外提供服务时先执行 `apikey add <name>`，确认 `apikey list` 显示 `auth=enforced`
+- 访问密钥只存哈希，完整值只在 `apikey add` 时显示一次；`auth.db` 与 `cache.db` 分离，`flushall` 不影响密钥
+- 公网部署必须放在 TLS 反代后面；访问密钥走明文 HTTP 会泄露
+- 建议在反代或主机上配置 fail2ban，按 `auth_fail` / `auth_blocked` 事件封禁，详见 [fail2ban 部署](docs/deployment/fail2ban.md)
+- DeepSeek API Key 只放在环境变量或配置文件中，不要提交到仓库
 - 缓存的网页正文可能包含敏感内容，必要时执行 `flushall`
 
 ---
@@ -678,6 +791,8 @@ CGO_ENABLED=1 go test -race ./...
 ```
 
 测试全部使用 `httptest` 假上游，不访问真实网络。
+
+> 项目保持纯 Go，构建与运行不需要 CGO；`-race` 只是可选的竞态检查，需要本机或 CI 提供 C 编译器。
 
 ## 9. 许可证
 

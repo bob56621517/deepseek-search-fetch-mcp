@@ -177,6 +177,30 @@ func TestFirstRunCreatesConfigFile(t *testing.T) {
 	if file["default_lang"] != "" {
 		t.Fatalf("模板中的 default_lang 应为空: %s", data)
 	}
+	if file["rate_limit_rps"] != float64(defaultRateLimitRPS) {
+		t.Fatalf("模板中的 rate_limit_rps 不符: %s", data)
+	}
+	if file["rate_limit_burst"] != float64(defaultRateLimitBurst) {
+		t.Fatalf("模板中的 rate_limit_burst 不符: %s", data)
+	}
+	if file["auth_fail_limit"] != float64(defaultAuthFailLimit) {
+		t.Fatalf("模板中的 auth_fail_limit 不符: %s", data)
+	}
+	if file["auth_fail_window"] != durationText(defaultAuthFailWindow) {
+		t.Fatalf("模板中的 auth_fail_window 不符: %s", data)
+	}
+	if file["auth_fail_block"] != durationText(defaultAuthFailBlock) {
+		t.Fatalf("模板中的 auth_fail_block 不符: %s", data)
+	}
+	if file["ip_rate_limit_rps"] != float64(defaultIPRateLimitRPS) {
+		t.Fatalf("模板中的 ip_rate_limit_rps 不符: %s", data)
+	}
+	if file["ip_rate_limit_burst"] != float64(defaultIPRateLimitBurst) {
+		t.Fatalf("模板中的 ip_rate_limit_burst 不符: %s", data)
+	}
+	if proxies, ok := file["trusted_proxies"].([]any); !ok || len(proxies) != 0 {
+		t.Fatalf("模板中的 trusted_proxies 应为空数组: %s", data)
+	}
 	if file["http_max_idle_conns"] != float64(defaultHTTPMaxIdleConns) {
 		t.Fatalf("模板中的 http_max_idle_conns 不符: %s", data)
 	}
@@ -472,6 +496,65 @@ func TestDefaultLangSettings(t *testing.T) {
 			}
 			if err == nil {
 				t.Fatalf("default_lang=%q 应报错", tc.value)
+			}
+		})
+	}
+}
+
+func TestAuthAndRateLimitConfig(t *testing.T) {
+	home := isolateHome(t)
+	writeConfigFile(t, home, `{
+		"deepseek_api_key": "k",
+		"rate_limit_rps": 2.5,
+		"rate_limit_burst": 7,
+		"auth_fail_limit": 3,
+		"auth_fail_window": "2m",
+		"auth_fail_block": "10m",
+		"ip_rate_limit_rps": 1.5,
+		"ip_rate_limit_burst": 4,
+		"trusted_proxies": ["127.0.0.1", " 10.0.0.0/8 ", ""]
+	}`)
+
+	cfg, err := loadConfig(nil, io.Discard)
+	if err != nil {
+		t.Fatalf("加载失败: %v", err)
+	}
+	if cfg.rateLimitRPS != 2.5 || cfg.rateLimitBurst != 7 ||
+		cfg.authFailLimit != 3 ||
+		cfg.authFailWindow != 2*time.Minute ||
+		cfg.authFailBlock != 10*time.Minute ||
+		cfg.ipRateLimitRPS != 1.5 ||
+		cfg.ipRateLimitBurst != 4 {
+		t.Fatalf("鉴权/限流配置未正确读取: %#v", cfg)
+	}
+	if len(cfg.trustedProxies) != 2 ||
+		cfg.trustedProxies[0] != "127.0.0.1" ||
+		cfg.trustedProxies[1] != "10.0.0.0/8" {
+		t.Fatalf("trusted_proxies 未正确读取: %#v", cfg.trustedProxies)
+	}
+}
+
+func TestInvalidAuthAndRateLimitSettings(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"负的每 key 速率", `{"deepseek_api_key":"k","rate_limit_rps":-1}`, "rate_limit_rps"},
+		{"每 key burst 过小", `{"deepseek_api_key":"k","rate_limit_rps":1,"rate_limit_burst":0}`, "rate_limit_burst"},
+		{"负的失败次数", `{"deepseek_api_key":"k","auth_fail_limit":-1}`, "auth_fail_limit"},
+		{"失败窗口为零", `{"deepseek_api_key":"k","auth_fail_limit":1,"auth_fail_window":"0s"}`, "auth_fail_window"},
+		{"封禁时长为零", `{"deepseek_api_key":"k","auth_fail_limit":1,"auth_fail_block":"0s"}`, "auth_fail_block"},
+		{"负的 IP 速率", `{"deepseek_api_key":"k","ip_rate_limit_rps":-1}`, "ip_rate_limit_rps"},
+		{"IP burst 过小", `{"deepseek_api_key":"k","ip_rate_limit_rps":1,"ip_rate_limit_burst":0}`, "ip_rate_limit_burst"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := isolateHome(t)
+			writeConfigFile(t, home, tc.body)
+			_, err := loadConfig(nil, io.Discard)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("应报告 %s 配置错误: %v", tc.want, err)
 			}
 		})
 	}

@@ -19,7 +19,7 @@ _Avoid_: 下载、爬取
 _Avoid_: 存储、数据库
 
 **命令行 (CLI)**:
-同一可执行文件的直接调用形态,包含 `server`、`search`、`fetch`、`flushall` 四个子命令。CLI 模式 stdout 只输出 JSON,日志只写日志文件。
+同一可执行文件的直接调用形态,包含 `server`、`search`、`fetch`、`flushall`、`apikey` 子命令。CLI 模式 stdout 只输出 JSON,日志只写日志文件。
 _Avoid_: 脚本、工具集
 
 **工具 (Tool)**:
@@ -40,12 +40,28 @@ _Avoid_: 文档、spec 文件
 stateless 模式下单次 HTTP 请求对应的临时 MCP 会话,不跨请求保留状态。
 _Avoid_: 连接、上下文
 
+**访问密钥 (Access key)**:
+MCP 客户端访问本服务的凭据,保存在数据目录下的 `auth.db`,与上游 `deepseek_api_key` 无关。只保存 SHA-256 哈希与首尾片段;完整值只在 `apikey add` 时显示一次。
+_Avoid_: 上游 API Key、token、密码
+
+**鉴权模式 (Auth mode)**:
+由 `api_keys` 是否存在决定。没有密钥时不鉴权;至少一个密钥时 `/mcp` 强制校验。删除最后一个密钥后立即回到不鉴权模式。
+_Avoid_: 登录、会话
+
+**限流 (Rate limit)**:
+进程内的每密钥令牌桶与每 IP 鉴权失败封禁。默认每密钥 10 rps / burst 20;同 IP 10 次失败/分钟封 5 分钟;每 IP 全量限流默认关闭。
+_Avoid_: 配额、计费
+
+**审计日志 (Audit log)**:
+写入 `server.log` 的拒绝事件,包含 `event`、`remote`、`status`、`reason` 等稳定字段,供 fail2ban 匹配;不记录任何密钥。
+_Avoid_: 访问日志、错误日志
+
 **错误体 (Error envelope)**:
 上游错误响应,OpenAI 兼容格式:`{"error":{"message","type","param","code"}}`。
 _Avoid_: 错误码、异常
 
 **配置文件 (Config file)**:
-默认路径 `~/.deepseek_search_fetch/config.json`(数据目录可配置),承载 `deepseek_api_key`、`deepseek_api_url`、`server_host`、`server_port`、超时参数、缓存参数(`cache_ttl`、`cache_max_bytes`)与默认语言(`default_lang`)。首次启动时自动创建。
+默认路径 `~/.deepseek_search_fetch/config.json`(数据目录可配置),承载 `deepseek_api_key`、`deepseek_api_url`、`server_host`、`server_port`、超时参数、缓存参数(`cache_ttl`、`cache_max_bytes`)、默认语言(`default_lang`)以及鉴权/限流参数(`rate_limit_*`、`auth_fail_*`、`ip_rate_limit_*`、`trusted_proxies`)。首次启动时自动创建。访问密钥本身不在配置文件中,由 `apikey` 命令管理。
 _Avoid_: 设置、环境
 
 ## 运行时
@@ -57,6 +73,10 @@ _Avoid_: 服务层、接入层
 **OpenAPI 工具层**:
 负责工具定义、参数校验与上游调用,对应 `internal/openapi`。不感知 MCP 传输。
 _Avoid_: 业务层、适配层
+
+**鉴权层**:
+负责访问密钥存储、鉴权/限流中间件与客户端 IP 解析,对应 `internal/auth`。只处理 `/mcp` 入口,不感知具体工具与上游接口。
+_Avoid_: 认证服务、权限系统
 
 **连接复位 (Connection reset)**:
 上游调用失败后丢弃空闲连接,下次调用重新建连,避免复用处于异常状态的连接。
