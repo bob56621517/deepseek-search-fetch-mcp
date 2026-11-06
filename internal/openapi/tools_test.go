@@ -596,6 +596,9 @@ func TestFetchSummaryTooLongFallsBackToContent(t *testing.T) {
 	if out.Kind != "content" || out.Content != "body" || out.HasSummary || out.Hint == "" {
 		t.Fatalf("超长摘要应按未命中处理并回退正文: %#v", out)
 	}
+	if !strings.Contains(out.Hint, "超过 8000") || strings.Contains(out.Hint, "请先调用 web_ext_search") {
+		t.Fatalf("超长摘要的 hint 应说明原因，且不引导重复搜索: %q", out.Hint)
+	}
 	if out.Source != "cache" {
 		t.Fatalf("正文应命中缓存: %#v", out)
 	}

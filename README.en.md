@@ -134,7 +134,7 @@ The data directory defaults to `~/.deepseek_search_fetch` and can be overridden 
 
 ## 2. Configuration
 
-The config file is fixed at `~/.deepseek_search_fetch/config.json`:
+The config file defaults to `~/.deepseek_search_fetch/config.json`; the data directory can be overridden with `--data-dir` or `DEEPSEEK_SEARCH_FETCH_HOME`:
 
 ```json
 {

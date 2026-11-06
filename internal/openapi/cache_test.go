@@ -357,6 +357,45 @@ func TestPruneEmptyCacheTerminates(t *testing.T) {
 	}
 }
 
+func TestPruneDoesNotOverEvict(t *testing.T) {
+	// 缓存远超上限时，批量淘汰应按需要释放的比例估算，不能因为固定翻倍而清空缓存。
+	const maxBytes = 400 << 10
+	cache := newTestCache(t, time.Hour, maxBytes)
+	ctx := context.Background()
+
+	const count = 32
+	body := strings.Repeat("x", 64<<10)
+	pages := make([]CachedPage, 0, count)
+	for i := 0; i < count; i++ {
+		pages = append(pages, CachedPage{
+			URL:     fmt.Sprintf("https://example.com/%d", i),
+			Title:   "t",
+			Content: body,
+		})
+	}
+	if err := cache.PutSearch(ctx, "q", pages); err != nil {
+		t.Fatalf("写入失败: %v", err)
+	}
+	if err := cache.Prune(ctx); err != nil {
+		t.Fatalf("清理失败: %v", err)
+	}
+
+	live, err := cache.liveSize(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live > maxBytes {
+		t.Fatalf("清理后仍超出容量: live=%d max=%d", live, maxBytes)
+	}
+	var remaining int
+	if err := cache.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM web_cache`).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining < 4 {
+		t.Fatalf("淘汰不应清空缓存，剩余仅 %d/%d 条", remaining, count)
+	}
+}
+
 func TestPruneDeletesExpiredEntries(t *testing.T) {
 	cache := newTestCache(t, 30*time.Minute, 1<<20)
 	clock := &fakeClock{now: time.Now()}

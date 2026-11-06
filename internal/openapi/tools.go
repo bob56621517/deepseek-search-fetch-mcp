@@ -495,26 +495,17 @@ type contentOutput struct {
 }
 
 func fetchSummary(ctx context.Context, client *Client, cache *Cache, logger *slog.Logger, opts FetchOptions) ([]byte, error) {
+	summaryTooLong := false
 	if !opts.Refresh && cache != nil {
 		page, ok, err := cache.GetSummary(ctx, opts.URL)
 		if err != nil {
 			logger.Warn("读取摘要缓存失败", "url", opts.URL, "err", err)
-		} else if ok && utf8.RuneCountInString(page.Summary) <= maxUsableSummaryRunes {
-			// 摘要始终完整返回；超过上限的摘要按未命中处理，回退为正文。
-			out := summaryOutput{
-				Kind:          "summary",
-				URL:           page.URL,
-				Title:         page.Title,
-				Summary:       page.Summary,
-				ContentLength: page.ContentLength,
-				Offset:        0,
-				Length:        utf8.RuneCountInString(page.Summary),
-				HasSummary:    true,
-				SummaryQuery:  page.SummaryQuery,
-				Source:        "cache",
-				CachedAt:      formatTime(page.SummaryAt),
+		} else if ok {
+			if utf8.RuneCountInString(page.Summary) <= maxUsableSummaryRunes {
+				// 摘要始终完整返回；超过上限的摘要按未命中处理，回退为正文。
+				return marshalSummaryOutput(page, "cache")
 			}
-			return json.Marshal(out)
+			summaryTooLong = true
 		}
 	}
 
@@ -522,16 +513,37 @@ func fetchSummary(ctx context.Context, client *Client, cache *Cache, logger *slo
 	if err != nil {
 		return nil, err
 	}
-	// loadContent 可能从缓存里读到刚写入或并发写入的摘要，这里以实际状态为准。
-	hasSummary := page.HasSummary
-	hint := ""
-	if !hasSummary {
-		hint = "该 URL 没有可用的缓存摘要；已返回正文。如需摘要，请先调用 web_ext_search。"
+	// GetSummary 瞬时失败或 refresh 后，loadContent 可能已经拿到可用摘要，以实际状态为准。
+	if page.HasSummary && utf8.RuneCountInString(page.Summary) <= maxUsableSummaryRunes {
+		return marshalSummaryOutput(page, source)
+	}
+	hint := "该 URL 没有可用的缓存摘要；已返回正文。如需摘要，请先调用 web_ext_search。"
+	if summaryTooLong || (page.Summary != "" && utf8.RuneCountInString(page.Summary) > maxUsableSummaryRunes) {
+		// 重新搜索同一 URL 大概率仍返回同样超长的摘要，不要引导调用方循环搜索。
+		hint = "缓存摘要超过 8000 个字符，无法以摘要形式返回；完整内容可按 offset/limit 分页读取正文。"
 	}
 	if opts.FullContent {
-		return buildFullContentOutput(page, source, hasSummary, hint)
+		return buildFullContentOutput(page, source, false, hint)
 	}
-	return buildContentOutput(page, 0, defaultFetchLimit, source, hasSummary, hint)
+	return buildContentOutput(page, 0, defaultFetchLimit, source, false, hint)
+}
+
+// marshalSummaryOutput 构造摘要模式的统一输出。
+func marshalSummaryOutput(page CachedPage, source string) ([]byte, error) {
+	out := summaryOutput{
+		Kind:          "summary",
+		URL:           page.URL,
+		Title:         page.Title,
+		Summary:       page.Summary,
+		ContentLength: page.ContentLength,
+		Offset:        0,
+		Length:        utf8.RuneCountInString(page.Summary),
+		HasSummary:    true,
+		SummaryQuery:  page.SummaryQuery,
+		Source:        source,
+		CachedAt:      formatTime(page.SummaryAt),
+	}
+	return json.Marshal(out)
 }
 
 func fetchContent(ctx context.Context, client *Client, cache *Cache, logger *slog.Logger, opts FetchOptions) ([]byte, error) {

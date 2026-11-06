@@ -134,7 +134,7 @@ Windows 下 `~` 对应用户目录，例如 `C:\Users\<name>`。
 
 ## 2. 配置
 
-配置文件固定为 `~/.deepseek_search_fetch/config.json`：
+配置文件默认位于 `~/.deepseek_search_fetch/config.json`，数据目录可用 `--data-dir` 或 `DEEPSEEK_SEARCH_FETCH_HOME` 覆盖：
 
 ```json
 {

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -23,10 +24,9 @@ const (
 	DefaultCacheMaxBytes int64 = 1 << 30
 	// cachePruneInterval 限制自动清理的最小间隔。
 	cachePruneInterval = time.Minute
-	// 容量淘汰按批删除；每批提交后重新测量，未达标时把批量翻倍。
-	// 起始值保持较小，避免一次删掉过多条目。
-	pruneBatchStart = 16
-	pruneBatchMax   = 4096
+	// pruneBatchMax 限制单轮容量淘汰删除的行数，避免一次删掉过多条目。
+	// 实际批量按“需要释放的比例”估算，通常远小于该上限。
+	pruneBatchMax = 4096
 	// pruneMaxRounds 限制单次 Prune 的淘汰轮数，避免长期占用连接。
 	pruneMaxRounds = 32
 	// pruneTargetPercent 是容量淘汰的目标水位（maxBytes 的百分比）。
@@ -67,6 +67,8 @@ type Cache struct {
 
 	pruneMu   sync.Mutex
 	lastPrune time.Time
+	// pruning 防止单次 Prune 执行时间超过 cachePruneInterval 时被再次重入。
+	pruning atomic.Bool
 }
 
 // OpenCache 打开（必要时创建）SQLite 缓存库。
@@ -336,6 +338,7 @@ func (c *Cache) PutFetch(ctx context.Context, page CachedPage, clearSummary bool
 
 // ClearSummary 丢弃指定 URL 的摘要，保留正文。
 // 用于 refresh 时上游返回空正文、无法写入新条目的场景。
+// 有意不更新 last_used：正文并未刷新成功，保留旧的 LRU 位置让条目更早被淘汰。
 func (c *Cache) ClearSummary(ctx context.Context, rawURL string) error {
 	if c == nil {
 		return nil
@@ -469,6 +472,11 @@ func (c *Cache) maybePrune(ctx context.Context) {
 	}
 	c.lastPrune = now
 	c.pruneMu.Unlock()
+	// 单次 Prune 可能超过 cachePruneInterval；用非阻塞标志避免并发重入。
+	if !c.pruning.CompareAndSwap(false, true) {
+		return
+	}
+	defer c.pruning.Store(false)
 	if err := c.Prune(ctx); err != nil && c.logger != nil {
 		c.logger.Warn("缓存清理失败", "err", err)
 	}
@@ -498,7 +506,8 @@ func (c *Cache) liveSize(ctx context.Context) (int64, error) {
 //
 // 容量按页级活跃大小判断，超过 maxBytes 时按 last_used 批量删除，直到降至目标水位。
 // 每批使用独立的隐式事务，提交后才重新测量；删除粒度是页，少量小行可能腾不出整页，
-// 因此连续无进展时会提前停止。Prune 不可并发调用，调用方需保证串行。
+// 因此连续无进展时会提前停止。maybePrune 用 pruning 标志避免重入；
+// 直接调用 Prune 的代码需自行保证串行。
 func (c *Cache) Prune(ctx context.Context) error {
 	if c == nil {
 		return nil
@@ -518,9 +527,21 @@ func (c *Cache) Prune(ctx context.Context) error {
 	}
 
 	target := c.maxBytes * pruneTargetPercent / 100
-	batch := int64(pruneBatchStart)
+	var rows int64
+	if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM web_cache`).Scan(&rows); err != nil {
+		return err
+	}
 	noProgress := 0
-	for round := 0; round < pruneMaxRounds && live > target; round++ {
+	for round := 0; round < pruneMaxRounds && live > target && rows > 0; round++ {
+		// 按需要释放的比例估算本轮删除行数：行大小均匀时一轮即可逼近目标；
+		// 不均匀时由后续轮次修正。相比固定翻倍，接近上限时不会大幅过度淘汰。
+		batch := rows * (live - target) / live
+		if batch < 1 {
+			batch = 1
+		}
+		if batch > pruneBatchMax {
+			batch = pruneBatchMax
+		}
 		res, err := c.db.ExecContext(ctx, `
 			DELETE FROM web_cache WHERE url IN (
 				SELECT url FROM web_cache ORDER BY last_used, url LIMIT ?)`, batch)
@@ -534,6 +555,10 @@ func (c *Cache) Prune(ctx context.Context) error {
 		if deleted == 0 {
 			break
 		}
+		rows -= deleted
+		if rows < 0 {
+			rows = 0
+		}
 		next, err := c.liveSize(ctx)
 		if err != nil {
 			return err
@@ -546,12 +571,6 @@ func (c *Cache) Prune(ctx context.Context) error {
 		live = next
 		if noProgress >= 2 {
 			break
-		}
-		if batch < pruneBatchMax {
-			batch *= 2
-			if batch > pruneBatchMax {
-				batch = pruneBatchMax
-			}
 		}
 	}
 	if live > target && c.logger != nil {

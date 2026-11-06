@@ -57,7 +57,7 @@ git merge origin/main
 
 ## 配置与日志
 
-固定配置文件:`~/.deepseek_search_fetch/config.json`
+默认配置文件:`~/.deepseek_search_fetch/config.json`(数据目录可用 `--data-dir` 或 `DEEPSEEK_SEARCH_FETCH_HOME` 覆盖)
 
 ```json
 {
