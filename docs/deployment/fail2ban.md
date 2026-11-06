@@ -17,7 +17,7 @@
 日志行示例：
 
 ```text
-time=2026-11-06T10:00:00.000+08:00 level=WARN msg="请求被拒绝" event=auth_fail remote=203.0.113.5 peer=127.0.0.1 method=POST path=/mcp status=401 reason=invalid_key
+time=2026-11-06T10:00:00.000+08:00 level=WARN msg=请求被拒绝 event=auth_fail remote=203.0.113.5 peer=127.0.0.1 method=POST path=/mcp status=401 reason=invalid_key
 ```
 
 - `remote` 是解析后的客户端地址；`peer` 是直接 TCP 对端。
@@ -40,6 +40,8 @@ ignoreregex =
 ```ini
 datepattern = ^time=%Y-%m-%dT%H:%M:%S
 ```
+
+`datepattern` 不消费时区偏移，fail2ban 会按所在主机时区解释时间。日志时区与 fail2ban 主机不一致时，所有行会整体偏移，`findtime` 的相对关系通常仍成立；最简单的是让两边保持同一时区，并用下面的 `fail2ban-regex` 实测。
 
 用真实日志验证规则：
 
@@ -74,11 +76,15 @@ ignoreip = 127.0.0.1/8 ::1
 
 ```json
 {
-  "trusted_proxies": ["127.0.0.1", "10.0.0.0/8"]
+  "trusted_proxies": ["127.0.0.1"]
 }
 ```
 
-只有来自这些地址的 `X-Forwarded-For` 才会被信任。未配置时 `remote` 是代理 IP，fail2ban 会封错对象；配置错误或 `X-Forwarded-For` 格式非法时，服务会回退到直接对端地址。
+- `trusted_proxies` **只能填写反向代理自身的地址或最小 CIDR**，不要填客户端网段。若大网段内同时存在直连客户端，它们可以伪造 `X-Forwarded-For`，绕过每 IP 限流与失败封禁，甚至诱导 fail2ban 误封第三方地址。
+- 反向代理应**追加**而不是无条件透传客户端自带的 `X-Forwarded-For`。nginx 常用 `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`。
+- 未配置时 `remote` 是代理 IP，fail2ban 会封错对象。
+- `X-Forwarded-For` 从右往左解析：最右侧非法时回退到直接对端；左侧出现非法项时会截断并保留右侧已解析出的地址，避免把失败计数错误地记到代理 IP。
+- 建议把代理地址加入 jail 的 `ignoreip`，避免代理自身因其他原因被误封。
 
 ## 日志轮转
 

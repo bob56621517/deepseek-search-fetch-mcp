@@ -63,6 +63,29 @@ func (k Key) Masked() string {
 	return k.Prefix + "…" + k.Suffix
 }
 
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+// scanKey 统一读取 id/name/key_prefix/key_suffix/created_at/last_used_at 六列。
+func scanKey(row rowScanner) (Key, error) {
+	var (
+		key        Key
+		createdAt  int64
+		lastUsedAt int64
+	)
+	if err := row.Scan(&key.ID, &key.Name, &key.Prefix, &key.Suffix, &createdAt, &lastUsedAt); err != nil {
+		return Key{}, err
+	}
+	if createdAt > 0 {
+		key.CreatedAt = time.Unix(createdAt, 0).UTC()
+	}
+	if lastUsedAt > 0 {
+		key.LastUsedAt = time.Unix(lastUsedAt, 0).UTC()
+	}
+	return key, nil
+}
+
 // Store 是落盘到 SQLite 的访问密钥库。
 type Store struct {
 	db     *sql.DB
@@ -219,43 +242,48 @@ func (s *Store) List(ctx context.Context) ([]Key, error) {
 
 	keys := make([]Key, 0)
 	for rows.Next() {
-		var (
-			key        Key
-			createdAt  int64
-			lastUsedAt int64
-		)
-		if err := rows.Scan(&key.ID, &key.Name, &key.Prefix, &key.Suffix, &createdAt, &lastUsedAt); err != nil {
+		key, err := scanKey(rows)
+		if err != nil {
 			return nil, err
-		}
-		if createdAt > 0 {
-			key.CreatedAt = time.Unix(createdAt, 0).UTC()
-		}
-		if lastUsedAt > 0 {
-			key.LastUsedAt = time.Unix(lastUsedAt, 0).UTC()
 		}
 		keys = append(keys, key)
 	}
 	return keys, rows.Err()
 }
 
-// Remove 按名称硬删除一条访问密钥。
-func (s *Store) Remove(ctx context.Context, name string) (bool, error) {
+// Remove 按名称硬删除一条访问密钥，并返回被删除的记录。
+func (s *Store) Remove(ctx context.Context, name string) (Key, bool, error) {
 	if s == nil || s.db == nil {
-		return false, errors.New("访问密钥库未打开")
+		return Key{}, false, errors.New("访问密钥库未打开")
 	}
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return false, errors.New("访问密钥名称不能为空")
+		return Key{}, false, errors.New("访问密钥名称不能为空")
 	}
-	res, err := s.db.ExecContext(ctx, `DELETE FROM api_keys WHERE name = ?`, name)
+	key, err := scanKey(s.db.QueryRowContext(ctx, `
+		SELECT id, name, key_prefix, key_suffix, created_at, last_used_at
+		FROM api_keys WHERE name = ?`, name))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Key{}, false, nil
+	}
 	if err != nil {
-		return false, err
+		return Key{}, false, err
+	}
+	res, err := s.db.ExecContext(ctx, `DELETE FROM api_keys WHERE id = ?`, key.ID)
+	if err != nil {
+		return Key{}, false, err
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
-		return false, err
+		return Key{}, false, err
 	}
-	return n > 0, nil
+	if n == 0 {
+		return Key{}, false, nil
+	}
+	s.lastUsedMu.Lock()
+	delete(s.lastUsed, key.ID)
+	s.lastUsedMu.Unlock()
+	return key, true, nil
 }
 
 // Authenticate 校验明文密钥，成功时顺带节流更新 last_used_at。
@@ -267,27 +295,14 @@ func (s *Store) Authenticate(ctx context.Context, plain string) (Key, bool, erro
 		return Key{}, false, nil
 	}
 
-	var (
-		key        Key
-		createdAt  int64
-		lastUsedAt int64
-	)
-	err := s.db.QueryRowContext(ctx, `
+	key, err := scanKey(s.db.QueryRowContext(ctx, `
 		SELECT id, name, key_prefix, key_suffix, created_at, last_used_at
-		FROM api_keys WHERE key_hash = ?`, hashKey(plain)).Scan(
-		&key.ID, &key.Name, &key.Prefix, &key.Suffix, &createdAt, &lastUsedAt,
-	)
+		FROM api_keys WHERE key_hash = ?`, hashKey(plain)))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Key{}, false, nil
 	}
 	if err != nil {
 		return Key{}, false, err
-	}
-	if createdAt > 0 {
-		key.CreatedAt = time.Unix(createdAt, 0).UTC()
-	}
-	if lastUsedAt > 0 {
-		key.LastUsedAt = time.Unix(lastUsedAt, 0).UTC()
 	}
 	s.touchLastUsed(ctx, key.ID)
 	return key, true, nil

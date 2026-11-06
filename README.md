@@ -128,7 +128,7 @@ Windows 下 `~` 对应用户目录，例如 `C:\Users\<name>`。
 
 - 首次启动时自动创建目录与配置文件模板；Key 为空。
 - 配置只在进程启动时读取一次，修改后需要重启服务。CLI 每次执行都会重新读取。访问密钥通过 `apikey` 命令管理，增删立即生效，不需要重启。
-- 如果无法确定用户主目录且未指定数据目录，程序会跳过配置文件创建，仅使用环境变量与启动参数；此时缓存不可用。以服务、容器等非交互账户运行时，务必显式指定数据目录或保证家目录指向用户目录（见 [Windows 服务部署](docs/deployment/windows-service.md)）。
+- 如果无法确定用户主目录且未指定数据目录，程序会跳过配置文件创建，仅使用环境变量与启动参数；此时缓存不可用，访问密钥库也无法打开，`server` 会启动失败。以服务、容器等非交互账户运行时，务必显式指定数据目录或保证家目录指向用户目录（见 [Windows 服务部署](docs/deployment/windows-service.md)）。
 
 ### 日志
 
@@ -196,7 +196,7 @@ Windows 下 `~` 对应用户目录，例如 `C:\Users\<name>`。
 | `auth_fail_block` | `5m` | 达到失败阈值后的封禁时长 |
 | `ip_rate_limit_rps` | `0` | 每个客户端 IP 的全量请求速率；`0` 关闭 |
 | `ip_rate_limit_burst` | `0` | 每个客户端 IP 的突发容量；开启 IP 限流时必须大于等于 1 |
-| `trusted_proxies` | `[]` | 可信代理 CIDR 列表；只有来自这些地址的 `X-Forwarded-For` 才会被信任 |
+| `trusted_proxies` | `[]` | 可信代理 CIDR 列表；只填反向代理自身地址，不要填客户端网段 |
 | `http_max_idle_conns` | `5` | 全局最大空闲连接数 |
 | `http_max_idle_conns_per_host` | `5` | 单主机最大空闲连接数 |
 | `http_idle_conn_timeout` | `90s` | 空闲连接超时 |

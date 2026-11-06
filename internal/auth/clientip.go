@@ -60,26 +60,21 @@ func (r *ClientIPResolver) Resolve(req *http.Request) (remote, peer string) {
 		return remote, peer
 	}
 	parts := strings.Split(raw, ",")
-	forwarded := make([]netip.Addr, 0, len(parts))
-	for _, part := range parts {
-		addr, err := netip.ParseAddr(strings.TrimSpace(part))
+	// 从右往左解析：遇到非法项就停止，保留最后一个有效地址。
+	// 这样 "garbage, 1.2.3.4" 仍能取到真实客户端，而不会把失败计数记到代理 IP。
+	var current netip.Addr
+	for i := len(parts) - 1; i >= 0; i-- {
+		addr, err := netip.ParseAddr(strings.TrimSpace(parts[i]))
 		if err != nil {
-			// 任何一项不合法都忽略整个 XFF，避免部分信任被利用。
-			return peer, peer
-		}
-		forwarded = append(forwarded, addr.Unmap())
-	}
-	if len(forwarded) == 0 {
-		return remote, peer
-	}
-
-	// 从右往左跳过可信代理，取最右侧的不可信地址。
-	current := forwarded[len(forwarded)-1]
-	for i := len(forwarded) - 2; i >= 0; i-- {
-		if !r.isTrusted(current) {
 			break
 		}
-		current = forwarded[i]
+		if current.IsValid() && !r.isTrusted(current) {
+			break
+		}
+		current = addr.Unmap()
+	}
+	if !current.IsValid() {
+		return peer, peer
 	}
 	return current.String(), peer
 }

@@ -128,7 +128,7 @@ The data directory defaults to `~/.deepseek_search_fetch` and can be overridden 
 
 - On first start the directory and a config template are created automatically; the Key is empty.
 - Config is read once at process start; restart the service after changing it. CLI commands re-read it on every run. Access keys are managed by `apikey` and take effect immediately without a restart.
-- If the user home directory cannot be determined and no data directory is set, the program skips config file creation and uses only environment variables and startup flags; caching is unavailable in that case. When running under a non-interactive account such as a service or container, always set the data directory explicitly or make sure the home directory points to the user directory (see [Windows service deployment](docs/deployment/windows-service.md)).
+- If the user home directory cannot be determined and no data directory is set, the program skips config file creation and uses only environment variables and startup flags; caching is unavailable and the access-key store cannot be opened, so `server` fails to start. When running under a non-interactive account such as a service or container, always set the data directory explicitly or make sure the home directory points to the user directory (see [Windows service deployment](docs/deployment/windows-service.md)).
 
 ### Logging
 
@@ -196,7 +196,7 @@ The config file defaults to `~/.deepseek_search_fetch/config.json`; the data dir
 | `auth_fail_block` | `5m` | Block duration after the failure threshold is reached |
 | `ip_rate_limit_rps` | `0` | All-request rate per client IP; `0` disables it |
 | `ip_rate_limit_burst` | `0` | Burst capacity per client IP; must be at least 1 when IP rate limiting is enabled |
-| `trusted_proxies` | `[]` | Trusted proxy CIDR list; `X-Forwarded-For` is honored only from these addresses |
+| `trusted_proxies` | `[]` | Trusted proxy CIDR list; include only the reverse proxy addresses, never client subnets |
 | `http_max_idle_conns` | `5` | Maximum idle connections overall |
 | `http_max_idle_conns_per_host` | `5` | Maximum idle connections per host |
 | `http_idle_conn_timeout` | `90s` | Idle connection timeout |

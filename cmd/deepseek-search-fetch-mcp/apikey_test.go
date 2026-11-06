@@ -110,6 +110,24 @@ func TestAPIKeyCLI(t *testing.T) {
 		t.Fatalf("remove 输出不符: %#v", removed)
 	}
 
+	logData, err := os.ReadFile(filepath.Join(home, dataDirName, "logs", "server.log"))
+	if err != nil {
+		t.Fatalf("读取审计日志失败: %v", err)
+	}
+	foundRemoveLog := false
+	for _, line := range strings.Split(string(logData), "\n") {
+		if !strings.Contains(line, "删除访问密钥") {
+			continue
+		}
+		foundRemoveLog = true
+		if !strings.Contains(line, "masked=") {
+			t.Fatalf("remove 审计日志缺少 masked: %s", line)
+		}
+	}
+	if !foundRemoveLog {
+		t.Fatalf("缺少 remove 审计日志: %s", logData)
+	}
+
 	listOut, err = captureStdout(t, func() error {
 		return runAPIKey([]string{"list"})
 	})
@@ -142,5 +160,27 @@ func TestIsLoopbackHost(t *testing.T) {
 		if got := isLoopbackHost(tc.host); got != tc.want {
 			t.Fatalf("isLoopbackHost(%q) = %v, want %v", tc.host, got, tc.want)
 		}
+	}
+}
+
+func TestAPIKeyAddWithDataDirFlag(t *testing.T) {
+	isolateHome(t)
+	dir := t.TempDir()
+
+	out, err := captureStdout(t, func() error {
+		return runAPIKey([]string{"add", "--data-dir", dir, "laptop"})
+	})
+	if err != nil {
+		t.Fatalf("apikey add --data-dir 失败: %v", err)
+	}
+	var added apiKeyAddTestOutput
+	if err := json.Unmarshal([]byte(out), &added); err != nil {
+		t.Fatalf("add 输出不是合法 JSON: %v\n%s", err, out)
+	}
+	if added.Name != "laptop" || added.APIKey == "" {
+		t.Fatalf("add 输出不符: %#v", added)
+	}
+	if _, err := os.Stat(filepath.Join(dir, authDBFileName)); err != nil {
+		t.Fatalf("auth.db 应落在 --data-dir 下: %v", err)
 	}
 }

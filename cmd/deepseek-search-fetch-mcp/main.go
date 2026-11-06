@@ -512,7 +512,7 @@ func runAPIKeyRemove(args []string) error {
 	}
 	defer store.Close()
 
-	removed, err := store.Remove(context.Background(), name)
+	key, removed, err := store.Remove(context.Background(), name)
 	if err != nil {
 		return err
 	}
@@ -530,9 +530,9 @@ func runAPIKeyRemove(args []string) error {
 	} else {
 		warning = "已删除最后一个访问密钥，/mcp 将不再校验身份"
 	}
-	logger.Info("删除访问密钥", "name", strings.TrimSpace(name), "auth", mode)
+	logger.Info("删除访问密钥", "name", key.Name, "masked", key.Masked(), "auth", mode)
 	body, err := json.Marshal(apiKeyRemoveOutput{
-		Name:    strings.TrimSpace(name),
+		Name:    key.Name,
 		Removed: true,
 		Auth:    mode,
 		Warning: warning,
@@ -561,7 +561,7 @@ func isLoopbackHost(host string) bool {
 
 func openAuthStore(cfg config, logger *slog.Logger) (*auth.Store, error) {
 	if cfg.dataDir == "" {
-		return nil, errors.New("无法确定数据目录，访问密钥库不可用")
+		return nil, errors.New("无法确定数据目录，访问密钥库不可用；请使用 --data-dir 或 DEEPSEEK_SEARCH_FETCH_HOME 指定")
 	}
 	return auth.OpenStore(auth.StoreOptions{
 		Path:   filepath.Join(cfg.dataDir, authDBFileName),

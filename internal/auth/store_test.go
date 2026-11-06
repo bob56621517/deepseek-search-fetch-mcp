@@ -92,13 +92,22 @@ func TestStoreAddListAuthenticateRemove(t *testing.T) {
 		t.Fatalf("超长密钥不应通过校验，ok=%v err=%v", ok, err)
 	}
 
-	removed, err := store.Remove(ctx, "laptop")
+	removedKey, removed, err := store.Remove(ctx, "laptop")
 	if err != nil || !removed {
 		t.Fatalf("Remove 失败: removed=%v err=%v", removed, err)
 	}
-	removed, err = store.Remove(ctx, "laptop")
+	if removedKey.Name != "laptop" || removedKey.Masked() != wantMasked {
+		t.Fatalf("Remove 返回的记录不符: %#v", removedKey)
+	}
+	if len(store.lastUsed) != 0 {
+		t.Fatalf("Remove 后 lastUsed 应被清理: %#v", store.lastUsed)
+	}
+	removedKey, removed, err = store.Remove(ctx, "laptop")
 	if err != nil || removed {
 		t.Fatalf("重复 Remove 应返回 false: removed=%v err=%v", removed, err)
+	}
+	if removedKey.Name != "" {
+		t.Fatalf("重复 Remove 不应返回记录: %#v", removedKey)
 	}
 	has, err = store.HasKeys(ctx)
 	if err != nil || has {

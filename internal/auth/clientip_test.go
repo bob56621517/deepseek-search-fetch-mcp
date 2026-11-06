@@ -55,11 +55,19 @@ func TestClientIPResolver(t *testing.T) {
 			wantPeer:   "127.0.0.1",
 		},
 		{
-			name:       "非法 XFF 回退到对端",
+			name:       "非法 XFF 在右侧时回退到对端",
 			trusted:    []string{"127.0.0.1"},
 			remoteAddr: "127.0.0.1:1234",
 			xff:        []string{"1.2.3.4, nope"},
 			wantRemote: "127.0.0.1",
+			wantPeer:   "127.0.0.1",
+		},
+		{
+			name:       "非法 XFF 在左侧时保留右侧有效地址",
+			trusted:    []string{"127.0.0.1"},
+			remoteAddr: "127.0.0.1:1234",
+			xff:        []string{"garbage, 1.2.3.4"},
+			wantRemote: "1.2.3.4",
 			wantPeer:   "127.0.0.1",
 		},
 		{

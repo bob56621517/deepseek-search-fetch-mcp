@@ -13,8 +13,6 @@ import (
 	"time"
 )
 
-const maxCredentialLen = 512
-
 // MiddlewareOptions 是鉴权中间件的装配参数。
 type MiddlewareOptions struct {
 	Store    *Store
@@ -35,10 +33,13 @@ type Middleware struct {
 	enforced  bool
 }
 
-// NewMiddleware 构建鉴权中间件。Store 必填，其余参数为空时使用安全默认值。
+// NewMiddleware 构建鉴权中间件。Store 与 Limiter 必填；Resolver/Logger 为空时使用默认值。
 func NewMiddleware(opts MiddlewareOptions) (*Middleware, error) {
 	if opts.Store == nil {
 		return nil, errors.New("鉴权存储不能为空")
+	}
+	if opts.Limiter == nil {
+		return nil, errors.New("限流器不能为空")
 	}
 	logger := opts.Logger
 	if logger == nil {
@@ -52,13 +53,9 @@ func NewMiddleware(opts MiddlewareOptions) (*Middleware, error) {
 			return nil, err
 		}
 	}
-	limiter := opts.Limiter
-	if limiter == nil {
-		limiter = NewLimiter(LimitConfig{})
-	}
 	return &Middleware{
 		store:    opts.Store,
-		limiter:  limiter,
+		limiter:  opts.Limiter,
 		resolver: resolver,
 		logger:   logger,
 	}, nil
@@ -144,9 +141,9 @@ func (m *Middleware) setMode(enforced bool) {
 		m.modeKnown = true
 		m.enforced = enforced
 		if enforced {
-			m.logger.Info("访问鉴权已启用，/mcp 请求必须携带访问密钥")
+			m.logger.Info("访问鉴权已启用，/mcp 请求必须携带访问密钥", "mode", "enforced")
 		} else {
-			m.logger.Info("访问鉴权未启用，/mcp 不校验访问密钥")
+			m.logger.Info("访问鉴权未启用，/mcp 不校验访问密钥", "mode", "disabled")
 		}
 		return
 	}
@@ -155,10 +152,10 @@ func (m *Middleware) setMode(enforced bool) {
 	}
 	m.enforced = enforced
 	if enforced {
-		m.logger.Info("访问鉴权已启用，/mcp 请求必须携带访问密钥")
+		m.logger.Info("访问鉴权已启用，/mcp 请求必须携带访问密钥", "mode", "enforced")
 		return
 	}
-	m.logger.Warn("访问鉴权已关闭，/mcp 不再校验访问密钥")
+	m.logger.Warn("访问鉴权已关闭，/mcp 不再校验访问密钥", "mode", "disabled")
 }
 
 func (m *Middleware) reject(
@@ -243,7 +240,7 @@ func validateCredential(plain string) (string, string) {
 	if plain == "" {
 		return "", "missing_key"
 	}
-	if len(plain) > maxCredentialLen {
+	if len(plain) > maxKeyLen {
 		return "", "key_too_long"
 	}
 	return plain, ""
