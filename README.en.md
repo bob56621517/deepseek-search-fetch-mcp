@@ -146,6 +146,7 @@ The config file is fixed at `~/.deepseek_search_fetch/config.json`:
   "fetch_timeout": "60s",
   "cache_ttl": "30m",
   "cache_max_bytes": 1073741824,
+  "default_lang": "",
   "http_max_idle_conns": 5,
   "http_max_idle_conns_per_host": 5,
   "http_idle_conn_timeout": "90s",
@@ -169,7 +170,8 @@ The config file is fixed at `~/.deepseek_search_fetch/config.json`:
 | `request_timeout` | `30s` | Timeout for regular upstream requests such as search |
 | `fetch_timeout` | `60s` | Timeout for fetch requests; browser rendering is slower, so it is configured separately |
 | `cache_ttl` | `30m` | Cache entry lifetime; content and summary are evaluated separately |
-| `cache_max_bytes` | `1073741824` (1 GiB) | Cache capacity limit, minimum 1 MiB |
+| `cache_max_bytes` | `1073741824` (1 GiB) | Page-level live-size limit, minimum 1 MiB; not a disk-usage limit |
+| `default_lang` | empty | Default language completion: empty disables it, `auto` reads `LC_ALL`/`LC_MESSAGES`/`LANG`, or set a two-letter code such as `zh`; `zh-CN` is rejected |
 | `http_max_idle_conns` | `5` | Maximum idle connections overall |
 | `http_max_idle_conns_per_host` | `5` | Maximum idle connections per host |
 | `http_idle_conn_timeout` | `90s` | Idle connection timeout |
@@ -420,6 +422,8 @@ Configuration fields differ slightly between clients; follow your client's docum
 
 Extended web search. Supports syntax such as `site:`, `-site:`, `lang:`, `after:`, `before:`, and exact phrases.
 
+When `default_lang` is configured and the query has **no** `lang:` operator, the server appends ` lang:<code>`; queries that already contain `lang:` are left untouched. Completion is skipped if it would exceed 128 characters. Native Windows usually has no `LANG`-style variables, so `auto` resolves to disabled there; set an explicit language code instead.
+
 Input:
 
 | Parameter | Type | Default | Description |
@@ -537,7 +541,7 @@ Main fields of the `web_cache` table:
 | `title` | Page title |
 | `content` | Full content |
 | `summary` | Condensed content returned by search |
-| `summary_query` | Search query that produced the summary |
+| `summary_query` | Search query that produced the summary; may include an auto-appended `lang:xx` when `default_lang` is configured |
 | `content_source` | `search` or `fetch` |
 | `content_at` / `summary_at` | Write timestamps for content/summary respectively |
 | `last_used` | Last use time (read or write), used for LRU eviction |

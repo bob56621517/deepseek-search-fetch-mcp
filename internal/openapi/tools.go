@@ -20,6 +20,9 @@ const (
 	defaultFetchLimit = 8000
 	maxFetchLimit     = 16000
 
+	// maxQueryRunes 是 query 的长度上限，与工具 schema 的 maxLength 一致。
+	maxQueryRunes = 128
+
 	// maxUsableSummaryRunes 是 summary 模式可接受的摘要长度上限。
 	// 超过上限时不截断，直接视为未命中并回退为正文，保证返回的摘要始终完整。
 	maxUsableSummaryRunes = 8000
@@ -35,17 +38,18 @@ type Tool struct {
 
 // Tools 返回 api/openapi.yaml 声明的全部工具。
 // cache 为 nil 时工具仍可工作，只是不预热和读取缓存。
-func Tools(client *Client, cache *Cache, logger *slog.Logger) []Tool {
+// defaultLang 非空时，query 未显式包含 lang: 的搜索会补全默认语言。
+func Tools(client *Client, cache *Cache, logger *slog.Logger, defaultLang string) []Tool {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return []Tool{
-		searchTool(client, cache, logger),
+		searchTool(client, cache, logger, defaultLang),
 		fetchTool(client, cache, logger),
 	}
 }
 
-func searchTool(client *Client, cache *Cache, logger *slog.Logger) Tool {
+func searchTool(client *Client, cache *Cache, logger *slog.Logger, defaultLang string) Tool {
 	return Tool{
 		Name: "web_ext_search",
 		Description: `扩展网页搜索。可以按站点包含/排除、语言、发布时间范围过滤，也支持精确短语和更明确的检索目标。
@@ -70,7 +74,8 @@ func searchTool(client *Client, cache *Cache, logger *slog.Logger) Tool {
 - before:2026-06-01：限定发布时间之前。
 - "精确短语"：精确匹配；-"排除短语"：排除该短语。
 - 关键词前加减号：排除包含该关键词的网页。
-示例：DeepSeek V4 site:github.com OR site:huggingface.co lang:zh after:2025`,
+示例：DeepSeek V4 site:github.com OR site:huggingface.co lang:zh after:2025
+服务端可通过 default_lang 配置在未写 lang: 时自动补全（默认关闭）；已显式包含 lang: 的 query 不会被改动。`,
 				},
 				"count": map[string]any{
 					"type":        "integer",
@@ -98,8 +103,10 @@ func searchTool(client *Client, cache *Cache, logger *slog.Logger) Tool {
 			if err != nil {
 				return nil, err
 			}
+			query, decision := applyDefaultLang(args.Query, defaultLang)
+			logLangDecision(logger, decision, defaultLang, args.Query)
 			body, err := client.Search(ctx, SearchRequest{
-				Query:        args.Query,
+				Query:        query,
 				Count:        args.Count,
 				OriQuestion:  args.OriQuestion,
 				Localization: args.Localization,
@@ -108,8 +115,19 @@ func searchTool(client *Client, cache *Cache, logger *slog.Logger) Tool {
 			if err != nil {
 				return nil, err
 			}
-			return projectSearchResults(ctx, body, args.Query, cache, logger)
+			return projectSearchResults(ctx, body, query, cache, logger)
 		},
+	}
+}
+
+// logLangDecision 记录默认语言补全的结果；不打印完整 query，避免日志泄露检索内容。
+func logLangDecision(logger *slog.Logger, decision LangDecision, lang, query string) {
+	switch decision {
+	case langAppended:
+		logger.Info("query 未指定 lang，已按默认语言补全", "lang", lang)
+	case langTooLong:
+		logger.Info("补全默认语言后超过长度上限，已跳过补全",
+			"lang", lang, "query_runes", utf8.RuneCountInString(query))
 	}
 }
 
@@ -181,7 +199,7 @@ func parseSearchArgs(raw json.RawMessage) (searchArgs, error) {
 	if strings.TrimSpace(args.Query) == "" {
 		return args, errors.New("参数 query 不能为空")
 	}
-	if utf8.RuneCountInString(args.Query) > 128 {
+	if utf8.RuneCountInString(args.Query) > maxQueryRunes {
 		return args, errors.New("参数 query 不能超过 128 个字符")
 	}
 	if args.Count < 0 {
@@ -362,6 +380,8 @@ type SearchOptions struct {
 	Query          string
 	Count          int
 	IncludeContent bool
+	// DefaultLang 非空时，query 未显式包含 lang: 会补全该语言码。
+	DefaultLang string
 }
 
 type directSearchOutput struct {
@@ -385,7 +405,7 @@ func SearchDirect(ctx context.Context, client *Client, cache *Cache, logger *slo
 	if strings.TrimSpace(opts.Query) == "" {
 		return nil, errors.New("参数 query 不能为空")
 	}
-	if utf8.RuneCountInString(opts.Query) > 128 {
+	if utf8.RuneCountInString(opts.Query) > maxQueryRunes {
 		return nil, errors.New("参数 query 不能超过 128 个字符")
 	}
 	if opts.Count < 0 {
@@ -404,8 +424,11 @@ func SearchDirect(ctx context.Context, client *Client, cache *Cache, logger *slo
 		logger = slog.Default()
 	}
 
+	query, decision := applyDefaultLang(opts.Query, opts.DefaultLang)
+	logLangDecision(logger, decision, opts.DefaultLang, opts.Query)
+
 	body, err := client.Search(ctx, SearchRequest{
-		Query:       opts.Query,
+		Query:       query,
 		Count:       opts.Count,
 		NeedContent: cache != nil || opts.IncludeContent,
 	})
@@ -419,7 +442,7 @@ func SearchDirect(ctx context.Context, client *Client, cache *Cache, logger *slo
 	if resp.Results == nil {
 		resp.Results = []searchResult{}
 	}
-	cacheSearchResults(ctx, cache, logger, opts.Query, resp.Results)
+	cacheSearchResults(ctx, cache, logger, query, resp.Results)
 
 	out := directSearchOutput{Results: make([]directSearchResult, 0, len(resp.Results))}
 	for _, r := range resp.Results {

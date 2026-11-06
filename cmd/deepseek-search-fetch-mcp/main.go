@@ -110,6 +110,21 @@ func runServer(args []string) error {
 	return serve(cfg)
 }
 
+// resolveDefaultLang 把配置中的 auto 解析为运行环境的主语言码。
+// 解析为空时自动语言补全关闭，并记录一条日志便于排查。
+func resolveDefaultLang(value string, logger *slog.Logger) string {
+	if value != "auto" {
+		return value
+	}
+	code := openapi.DetectLocale()
+	if code == "" {
+		logger.Info("未检测到语言环境变量，自动语言补全关闭")
+		return ""
+	}
+	logger.Info("已启用默认语言自动补全", "lang", code)
+	return code
+}
+
 func serve(cfg config) error {
 	logger, logCloser, err := newLogger(os.Stderr, slog.LevelInfo, cfg.dataDir)
 	if err != nil {
@@ -129,11 +144,13 @@ func serve(cfg config) error {
 		defer cache.Close()
 	}
 
+	defaultLang := resolveDefaultLang(cfg.defaultLang, logger)
 	srv := mcp.New(mcp.Options{
-		Client:  client,
-		Cache:   cache,
-		Logger:  logger,
-		Version: buildVersion(),
+		Client:      client,
+		Cache:       cache,
+		Logger:      logger,
+		Version:     buildVersion(),
+		DefaultLang: defaultLang,
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -197,10 +214,12 @@ func runSearch(args []string) error {
 		defer cache.Close()
 	}
 
+	defaultLang := resolveDefaultLang(cfg.defaultLang, logger)
 	body, err := openapi.SearchDirect(context.Background(), client, cache, logger, openapi.SearchOptions{
 		Query:          query,
 		Count:          *count,
 		IncludeContent: *content,
+		DefaultLang:    defaultLang,
 	})
 	if err != nil {
 		return err

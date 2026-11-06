@@ -146,6 +146,7 @@ Windows 下 `~` 对应用户目录，例如 `C:\Users\<name>`。
   "fetch_timeout": "60s",
   "cache_ttl": "30m",
   "cache_max_bytes": 1073741824,
+  "default_lang": "",
   "http_max_idle_conns": 5,
   "http_max_idle_conns_per_host": 5,
   "http_idle_conn_timeout": "90s",
@@ -169,7 +170,8 @@ Windows 下 `~` 对应用户目录，例如 `C:\Users\<name>`。
 | `request_timeout` | `30s` | 搜索等常规上游请求超时 |
 | `fetch_timeout` | `60s` | 抓取请求超时；浏览器渲染较慢，独立配置 |
 | `cache_ttl` | `30m` | 缓存条目有效期，正文与摘要分别计算 |
-| `cache_max_bytes` | `1073741824`（1 GiB） | 缓存容量上限，最小 1 MiB |
+| `cache_max_bytes` | `1073741824`（1 GiB） | 页级活跃大小上限，最小 1 MiB，不代表磁盘占用 |
+| `default_lang` | 空 | 默认语言补全：空为关闭，`auto` 读取 `LC_ALL`/`LC_MESSAGES`/`LANG`，也可写两位语言码（如 `zh`）；写 `zh-CN` 会报错 |
 | `http_max_idle_conns` | `5` | 全局最大空闲连接数 |
 | `http_max_idle_conns_per_host` | `5` | 单主机最大空闲连接数 |
 | `http_idle_conn_timeout` | `90s` | 空闲连接超时 |
@@ -420,6 +422,8 @@ deepseek-search-fetch-mcp server
 
 扩展网页搜索。支持 `site:`、`-site:`、`lang:`、`after:`、`before:`、精确短语等语法。
 
+配置 `default_lang` 后，query 中**没有** `lang:` 操作符时，服务端会按配置追加 ` lang:<code>`；已经写了 `lang:` 的 query 不会被改动。补全后超过 128 字符时不补全。原生 Windows 默认没有 `LANG` 等环境变量，`auto` 会关闭，建议显式配置语言码。
+
 输入：
 
 | 参数 | 类型 | 默认 | 说明 |
@@ -537,7 +541,7 @@ deepseek-search-fetch-mcp server
 | `title` | 页面标题 |
 | `content` | 完整正文 |
 | `summary` | 搜索返回的正文精简版 |
-| `summary_query` | 生成摘要的搜索词 |
+| `summary_query` | 生成摘要的搜索词；配置 `default_lang` 时可能包含自动补全的 `lang:xx` |
 | `content_source` | `search` 或 `fetch` |
 | `content_at` / `summary_at` | 正文/摘要各自的写入时间 |
 | `last_used` | 最近使用时间（读或写），用于 LRU 淘汰 |

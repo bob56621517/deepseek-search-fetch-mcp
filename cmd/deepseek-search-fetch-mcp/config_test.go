@@ -62,6 +62,7 @@ func TestLoadFromFixedConfigFile(t *testing.T) {
 		"fetch_timeout": "75s",
 		"cache_ttl": "45m",
 		"cache_max_bytes": 2097152,
+		"default_lang": "zh",
 		"http_max_idle_conns": 8,
 		"http_max_idle_conns_per_host": 4,
 		"http_idle_conn_timeout": "60s",
@@ -80,6 +81,7 @@ func TestLoadFromFixedConfigFile(t *testing.T) {
 		cfg.fetchTimeout != 75*time.Second ||
 		cfg.cacheTTL != 45*time.Minute ||
 		cfg.cacheMaxBytes != 2097152 ||
+		cfg.defaultLang != "zh" ||
 		cfg.httpMaxIdleConns != 8 ||
 		cfg.httpMaxIdleConnsPerHost != 4 ||
 		cfg.httpIdleConnTimeout != 60*time.Second ||
@@ -169,6 +171,9 @@ func TestFirstRunCreatesConfigFile(t *testing.T) {
 	}
 	if file["cache_max_bytes"] != float64(defaultCacheMaxBytes) {
 		t.Fatalf("模板中的 cache_max_bytes 不符: %s", data)
+	}
+	if file["default_lang"] != "" {
+		t.Fatalf("模板中的 default_lang 应为空: %s", data)
 	}
 	if file["http_max_idle_conns"] != float64(defaultHTTPMaxIdleConns) {
 		t.Fatalf("模板中的 http_max_idle_conns 不符: %s", data)
@@ -380,5 +385,42 @@ func TestDataDirFlagOverridesEnv(t *testing.T) {
 	}
 	if cfg.dataDir != flagDir {
 		t.Fatalf("--data-dir 应优先于环境变量: %q", cfg.dataDir)
+	}
+}
+
+func TestDefaultLangSettings(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		want  string
+		ok    bool
+	}{
+		{"关闭", "", "", true},
+		{"auto", "auto", "auto", true},
+		{"auto 大写", "AUTO", "auto", true},
+		{"两位语言码", "zh", "zh", true},
+		{"两位语言码大写", "EN", "en", true},
+		{"带地区", "zh-CN", "", false},
+		{"三位语言码", "fil", "", false},
+		{"非字母", "z1", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := isolateHome(t)
+			writeConfigFile(t, home, `{"deepseek_api_key":"k","default_lang":"`+tc.value+`"}`)
+			cfg, err := loadConfig(nil, io.Discard)
+			if tc.ok {
+				if err != nil {
+					t.Fatalf("加载失败: %v", err)
+				}
+				if cfg.defaultLang != tc.want {
+					t.Fatalf("default_lang = %q, want %q", cfg.defaultLang, tc.want)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("default_lang=%q 应报错", tc.value)
+			}
+		})
 	}
 }

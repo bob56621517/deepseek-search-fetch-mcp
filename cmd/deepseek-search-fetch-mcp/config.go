@@ -43,6 +43,7 @@ type config struct {
 	fetchTimeout            time.Duration
 	cacheTTL                time.Duration
 	cacheMaxBytes           int64
+	defaultLang             string
 	httpMaxIdleConns        int
 	httpMaxIdleConnsPerHost int
 	httpIdleConnTimeout     time.Duration
@@ -59,6 +60,7 @@ type fileConfig struct {
 	FetchTimeout            *string `json:"fetch_timeout"`
 	CacheTTL                *string `json:"cache_ttl"`
 	CacheMaxBytes           *int64  `json:"cache_max_bytes"`
+	DefaultLang             *string `json:"default_lang"`
 	HTTPMaxIdleConns        *int    `json:"http_max_idle_conns"`
 	HTTPMaxIdleConnsPerHost *int    `json:"http_max_idle_conns_per_host"`
 	HTTPIdleConnTimeout     *string `json:"http_idle_conn_timeout"`
@@ -222,6 +224,9 @@ func applyFileConfig(cfg *config, file fileConfig) error {
 	if file.CacheMaxBytes != nil {
 		cfg.cacheMaxBytes = *file.CacheMaxBytes
 	}
+	if file.DefaultLang != nil {
+		cfg.defaultLang = strings.TrimSpace(*file.DefaultLang)
+	}
 	if file.HTTPMaxIdleConns != nil {
 		cfg.httpMaxIdleConns = *file.HTTPMaxIdleConns
 	}
@@ -290,6 +295,17 @@ func validateConfig(cfg *config) error {
 	if cfg.cacheMaxBytes < 1<<20 {
 		return fmt.Errorf("cache_max_bytes 不能小于 1048576，当前为 %d", cfg.cacheMaxBytes)
 	}
+	switch {
+	case cfg.defaultLang == "":
+	case strings.EqualFold(cfg.defaultLang, "auto"):
+		cfg.defaultLang = "auto"
+	default:
+		code := strings.ToLower(cfg.defaultLang)
+		if len(code) != 2 || code[0] < 'a' || code[0] > 'z' || code[1] < 'a' || code[1] > 'z' {
+			return fmt.Errorf("default_lang 只能为空、auto 或两位语言码（如 zh），当前为 %q", cfg.defaultLang)
+		}
+		cfg.defaultLang = code
+	}
 	if cfg.httpMaxIdleConns < 1 {
 		return fmt.Errorf("http_max_idle_conns 必须大于等于 1，当前为 %d", cfg.httpMaxIdleConns)
 	}
@@ -331,6 +347,7 @@ func ensureConfigFile(dir string) (string, error) {
 		FetchTimeout            string `json:"fetch_timeout"`
 		CacheTTL                string `json:"cache_ttl"`
 		CacheMaxBytes           int64  `json:"cache_max_bytes"`
+		DefaultLang             string `json:"default_lang"`
 		HTTPMaxIdleConns        int    `json:"http_max_idle_conns"`
 		HTTPMaxIdleConnsPerHost int    `json:"http_max_idle_conns_per_host"`
 		HTTPIdleConnTimeout     string `json:"http_idle_conn_timeout"`
@@ -345,6 +362,7 @@ func ensureConfigFile(dir string) (string, error) {
 		FetchTimeout:            durationText(defaultFetchTimeout),
 		CacheTTL:                durationText(defaultCacheTTL),
 		CacheMaxBytes:           defaultCacheMaxBytes,
+		DefaultLang:             "",
 		HTTPMaxIdleConns:        defaultHTTPMaxIdleConns,
 		HTTPMaxIdleConnsPerHost: defaultHTTPMaxIdleConnsPerHost,
 		HTTPIdleConnTimeout:     durationText(defaultHTTPIdleConnTimeout),

@@ -49,6 +49,15 @@ nssm start $svc
 - `AppStdout` / `AppStderr`：让 NSSM 捕获进程标准输出/错误到文件，可选；程序自身日志已写入 `<data_dir>/logs/server.log`。
 - 路径或 Key 包含空格时，用引号包裹对应的 `KEY=VALUE` 整体。
 
+## 默认语言与 LANG
+
+`default_lang: "auto"` 只读取 `LC_ALL`、`LC_MESSAGES`、`LANG` 环境变量，不读取 Windows 系统区域设置。NSSM 服务默认没有这些变量，`auto` 会解析为空并关闭自动语言补全。
+
+需要语言自动补全时，有两种方式：
+
+- 在 `config.json` 中显式写 `"default_lang": "zh"`（推荐，行为最可预测）；
+- 或通过 NSSM 注入 `LANG`，例如 `AppEnvironmentExtra DEEPSEEK_API_KEY=sk-... DEEPSEEK_SEARCH_FETCH_HOME=D:\data\deepseek LANG=zh_CN.UTF-8`。此后 `"default_lang": "auto"` 会解析为 `zh`。
+
 ## 验证
 
 ```powershell
